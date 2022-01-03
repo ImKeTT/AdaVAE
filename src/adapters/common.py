@@ -8,6 +8,7 @@ class AdapterConfig(NamedTuple):
     adapter_size: int
     adapter_act: Union[str, Callable]
     adapter_initializer_range: float
+    label_emb_size: int
 
 
 def freeze_all_parameters(model: nn.Module) -> nn.Module:

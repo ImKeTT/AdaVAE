@@ -4,7 +4,7 @@ import logging
 import torch
 import torch.nn as nn
 from transformers import BertModel
-from transformers.models.bert.modeling_bert import ACT2FN, BertSelfOutput
+from transformers.modeling_bert import ACT2FN, BertSelfOutput
 
 from adapters.common import AdapterConfig
 

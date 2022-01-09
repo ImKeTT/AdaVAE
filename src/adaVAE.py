@@ -6,17 +6,17 @@
 @email: tuisaac163@gmail.com
 @feature: #Enter features here
 """
-from src.adapters import *
+from adapters import *
 import numpy as np
 import torch, logging, math, time, os, argparse, re, copy
 from tensorboardX import SummaryWriter
 from tqdm import tqdm
 from typing import Optional
 import torch.nn.functional as F
-from src.adapters.vae import *
-from src.utils import *
-from src.adapters.common import AdapterConfig
-from src.data import ConditionalGenerationDataset
+from adapters.vae import *
+from utils import *
+from adapters.common import AdapterConfig
+from data import ConditionalGenerationDataset
 
 from torch.utils.data import Dataset, DataLoader
 from apex.optimizers import FusedAdam
@@ -53,8 +53,10 @@ parser.add_argument('--label_emb_size', type=int, default=8,
                     help="label embedding size")
 parser.add_argument('--batch-sizes', nargs='+', type=int, default=[1],
                     help='batch size per GPU. Lists the schedule.')
-parser.add_argument('--seq-lens', nargs='+', type=int, default=[1024],
+parser.add_argument('--seq-lens', nargs='+', type=int, default=[30],
                     help='seq length per sample. Lists the schedule.')
+parser.add_argument('--max_length', type=int, default=25,
+                    help='max length of every input sentence')
 parser.add_argument('--switch-time', type=float, default=0,
                     help="Percentage of iterations to spend on short sequence training.")
 parser.add_argument('--data-dir', type=str, default='data')
@@ -130,10 +132,11 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, label_onehot, 
     return loss, ce_loss, regularization_loss
 
 
-def tokenize(texts, tokenizer, device):
+def tokenize(texts, tokenizer, device, args):
     tokenizer.pad_token = tokenizer.eos_token
     x_tokenized = tokenizer(texts, padding=True,
-                                 truncation=True, return_tensors='pt')
+                                 truncation=True,
+                            return_tensors='pt', max_length=args.max_length)
     input_ids = x_tokenized['input_ids'][:, :-1].to(device)
     attention_mask = x_tokenized['attention_mask'][:, 1:].to(device)
     x_ids = x_tokenized['input_ids'][:, 1:].to(device)
@@ -361,7 +364,7 @@ def train(args):
         # train_iter = iter(train_loader); x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask = next(train_iter)
         with tqdm(total=len(train_loader)) as pbar:
             for i, data_dict in enumerate(train_loader):
-                x_ids, input_ids, attention_mask = tokenize(data_dict['x'], tokenizer, device)
+                x_ids, input_ids, attention_mask = tokenize(data_dict['x'], tokenizer, device, args)
                 label_onehot = F.one_hot(torch.tensor(data_dict['y']),
                                          torch.tensor(ada_config.class_num)).float().to(device)
 
@@ -516,7 +519,7 @@ def train(args):
         AdaVAE.train()
 
 if __name__=="__main__":
-    args = parser.parse_args('train --batch-sizes 2 --seq-lens 1024 --add_attn --label_cond --adapter_size 50'.split())
+    args = parser.parse_args('train --batch-sizes 80 --max_length 25 --add_attn --label_cond --adapter_size 50'.split())
     train(args)
 
 # class AdaGPT2VAE(pl.LightningModule):

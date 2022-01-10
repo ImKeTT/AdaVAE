@@ -58,39 +58,38 @@ def top_k_top_p_filtering(logits, top_k=100, top_p=0.95, filter_value=-float('In
 
     return logits
 
-def sample_sequence(model, tokenizer, length, batch_size=None, x_mask=None, x_tokens=None, y_mask=None, y_tokens=None,
-                    temperature=1, top_k=100, top_p=0.95, device='cuda', sample=True, eos_token=None, model_type='cvae'):
-    x_mask = x_mask.to(device)
-    x_tokens = x_tokens.to(device)
-    y_mask = y_mask.to(device)
-    y_tokens = y_tokens.to(device)
-
+def sample_sequence(model, length, label, batch_size=None,
+                    temperature=1, top_k=100, top_p=0.95, device='cuda',
+                    sample=True, eos_token=None, model_type='cvae'):
     with torch.no_grad():
-        if model_type == 'cvae':
-            try:
-                prior_mean, prior_logvar = model.encoder_prior(input_ids=x_tokens, attention_mask=x_mask)[:2]
-            except:
-                prior_mean = prior_logvar = torch.zeros([batch_size, model.config.n_embd], device=device)
-            latent_mean, latent_logvar = prior_mean, prior_logvar
-            z = model.reparameterize(latent_mean, latent_logvar)
-            assert not torch.isnan(z).any(), 'training get nan z'
-        else:
-            posterior_mean, posterior_logvar = model.encoder(input_ids=x_tokens, attention_mask=x_mask)[:2]
-            latent_mean, latent_logvar = posterior_mean, posterior_logvar
-            z = latent_mean
-            assert not torch.isnan(z).any(), 'training get nan z'
+        # if model_type == 'cvae':
+        z = torch.randn([batch_size, model.config.n_embd], device=device)
+        label_emb = model.label_embedding(F.one_hot(label,
+                                                    torch.tensor(model.ada_config.class_num)).float().to(device))
+        #     try:
+        #         prior_mean, prior_logvar = model.encoder_prior(input_ids=x_tokens, attention_mask=x_mask)[:2]
+        #     except:
+        #         prior_mean = prior_logvar = torch.zeros([batch_size, model.config.n_embd], device=device)
+        #     latent_mean, latent_logvar = prior_mean, prior_logvar
+        #     z = model.reparameterize(latent_mean, latent_logvar)
+        #     assert not torch.isnan(z).any(), 'training get nan z'
+        # else:
+        #     posterior_mean, posterior_logvar = model.encoder(input_ids=x_tokens, attention_mask=x_mask)[:2]
+        #     latent_mean, latent_logvar = posterior_mean, posterior_logvar
+        #     z = latent_mean
+        #     assert not torch.isnan(z).any(), 'training get nan z'
 
-        _, mem = model.transformer(input_ids=x_tokens[:, :-1], past=None, attention_mask=x_mask[:, :-1], representations=z)
-        prev = x_tokens[:, -1].view(batch_size, -1)
+        mem = None
+        prev = torch.tensor([[eos_token]] * batch_size, dtype=torch.long, device=device)
 
         output = prev
-        probability = torch.tensor([], dtype=z.dtype, device=device)
+        probability = torch.tensor([], dtype=torch.float, device=device)
         if_end = torch.tensor([False] * batch_size, dtype=torch.bool, device=device)
 
         for i in range(length): #trange
-            logits, mem = model.transformer(input_ids=prev, past=mem, representations=z)
+            last_hidden, mem = model.transformer(input_ids=prev, past=mem, representations=z, label_emb=label_emb)
 
-            logits = model.lm_head(logits)
+            logits = model.lm_head(last_hidden)
             if model.add_softmax:
                 logits_rep = model.lm_head_rep(z)
                 logits = logits + logits_rep.unsqueeze(dim=1)
@@ -140,6 +139,20 @@ def init_para_frompretrained(m, pm, share_para=False):
 
     m.ln_f.weight = pm.ln_f.weight if share_para else copy.copy(pm.ln_f.weight)
     m.ln_f.bias = pm.ln_f.bias if share_para else copy.copy(pm.ln_f.bias)
+
+def unfreeze_GPT2_adapters(GPT2_model: nn.Module, Adapter: nn.Module) -> nn.Module:
+    # Unfreeze trainable parts — layer norms and adapters
+    for name, sub_module in GPT2_model.named_modules():
+        if isinstance(sub_module, (Adapter, nn.LayerNorm)):
+            for param_name, param in sub_module.named_parameters():
+                param.requires_grad = True
+    return GPT2_model
+
+def save_trainable_params(Model: nn.Module, Adapter: nn.Module, additional_param_list: list):
+    for name, sub_module in Model.named_modules():
+        if isinstance(sub_module, (Adapter, nn.LayerNorm)):
+            for param_name, param in sub_module.named_parameters():
+                param.requires_grad = True
 
 def switch_schedule(schedule, mult, switch):
     """ Apply LR multiplier before iteration "switch" """

@@ -8,7 +8,9 @@
 """
 from adapters import *
 import numpy as np
-import torch, logging, math, time, os, argparse, re, copy
+import collections
+import torch, math, time, os, argparse, re, copy
+from logger import Logger
 from tensorboardX import SummaryWriter
 from tqdm import tqdm
 from typing import Optional
@@ -27,7 +29,7 @@ from transformers.modeling_utils import PreTrainedModel, Conv1D, prune_conv1d_la
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, AdamW, get_linear_schedule_with_warmup, Conv1D
 
 
-devices = '0, 1'
+devices = '1'
 os.environ["CUDA_VISIBLE_DEVICES"] = devices
 
 parser = argparse.ArgumentParser()
@@ -35,17 +37,17 @@ parser.add_argument('experiment', type=str)
 
 # Default parameters are set based on single GPU training
 parser.add_argument('--lr', type=float, default=5e-5)
-parser.add_argument("--seed", type=int, default=0)
+parser.add_argument("--seed", type=int, default=42)
 
 # parser.add_argument('--data_type', type=str, default='t1', choices=['t' + str(i) for i in range(9)], help="t: type")
-parser.add_argument('--model_type', type=str, default='cvae', choices=['cvae', 'ae_vae_fusion'])
-parser.add_argument('--iterations', type=int, default=101640 * 4)  # wp 850001  wi 300001 ax 300001 yp 800001
+parser.add_argument('--model_type', type=str, default='cvae', choices=['cvae'])
+parser.add_argument('--iterations', type=int, default=30000 * 3)
 parser.add_argument('--dataset', type=str, default='yelp_polarity', choices=['yelp_polarity, imdb_polariry'],
                     help="Dataset to use for training")
 parser.add_argument('--warmup', type=int, default=10000,
                     help="Amount of iterations to warmup, then decay. (-1 for no warmup and decay)")
 
-parser.add_argument('--adapter_size', type=int, default=200,
+parser.add_argument('--adapter_size', type=int, default=256,
                     help="Hidden size of GPT2 encoder/decoder adapter")
 parser.add_argument('--class_num', type=int, default=2,
                     help="class number for controllable generation")
@@ -61,23 +63,24 @@ parser.add_argument('--switch-time', type=float, default=0,
                     help="Percentage of iterations to spend on short sequence training.")
 parser.add_argument('--data-dir', type=str, default='data')
 parser.add_argument('--out-dir', type=str, default='out')
-parser.add_argument('--load', type=str, help='path to load model from') # , default='out/test/'
-parser.add_argument('--workers', default=1, type=int, metavar='N',
+parser.add_argument('--workers', default=2, type=int, metavar='N',
                     help='number of data loading workers')
 # use GPU
 parser.add_argument('--gpu', default=0, type=int)
 parser.add_argument('--no_gpu', action="store_true")
 
 parser.add_argument('--fp16', action='store_true', help="Train using FP16?")
-parser.add_argument('--fp16_opt_level', default='O0', type=str, required=False)
+parser.add_argument('--fp16_opt_level', default='O1', type=str, required=False)
 
 # KL cost annealing, increase beta from beta_0 to 1 in beta_warmup steps
 parser.add_argument('--beta_0', default=1.00, type=float)
-parser.add_argument('--beta_warmup', type=int, default=50000)
+parser.add_argument('--beta_warmup', type=int, default=10000)
 # cyc_vae parameters
-parser.add_argument('--cycle', type=int, default=101640)
+parser.add_argument('--cycle', type=int, default=30000)
 ## trigger
+parser.add_argument('--load', action="store_true")
 parser.add_argument('--label_cond', action="store_true")
+parser.add_argument('--save_all', action="store_true", help="save full parameters of the model")
 parser.add_argument('--add_input', action="store_true")
 parser.add_argument('--add_attn', action="store_true")
 parser.add_argument('--add_softmax', action="store_true")
@@ -139,7 +142,7 @@ def tokenize(texts, tokenizer, device, args):
                             return_tensors='pt', max_length=args.max_length)
     input_ids = x_tokenized['input_ids'][:, :-1].to(device)
     attention_mask = x_tokenized['attention_mask'][:, 1:].to(device)
-    x_ids = x_tokenized['input_ids'][:, 1:].to(device)
+    x_ids = x_tokenized['input_ids'][:, 1:].contiguous().to(device)
     ## target, input tokens, mask
     return x_ids, input_ids, attention_mask
 
@@ -195,12 +198,14 @@ def train(args):
 
     # logging
     save_folder = os.path.join(args.out_dir, args.experiment)
-    os.makedirs(save_folder, exist_ok=True)
+    os.makedirs(os.path.join(save_folder, 'ckpt/model'), exist_ok=True)
+    os.makedirs(os.path.join(save_folder, 'ckpt/opt'), exist_ok=True)
     t_writer = SummaryWriter(os.path.join(save_folder, 'train'), flush_secs=5)
     v_writer = SummaryWriter(os.path.join(save_folder, 'val'), flush_secs=5)
     # importlib.reload(logging)
-    logging.basicConfig(filename=os.path.join(save_folder, 'train.log'),
-                        level=logging.INFO, format='%(asctime)s--- %(message)s')
+    logging = Logger(os.path.join(save_folder, 'train.log'))
+    # logging.basicConfig(filename=os.path.join(save_folder, 'train.log'),
+    #                     level=logging.INFO, format='%(asctime)s--- %(message)s', filemode='w')
     logging.info('\n*******************************************************************************\n')
     logging.info("the configuration:")
     logging.info(str(args).replace(',', '\n'))
@@ -273,21 +278,8 @@ def train(args):
         # AdaVAE.lm_head_rep = LM_head_rep(*gpt2_model.lm_head.weight.size()[::-1])
     print('AdaVAE params:', num_params(AdaVAE))  #
 
-    ## load ckpt
-    if args.load:
-        print('Loading model weights...')
-        state = torch.load(os.path.join(args.load, 'model_latest.pt'))  # , map_location='cpu' model_latest.pt
-        if 'module' in list(state.keys())[0]:  # model_path is data parallel model with attr 'module'
-            state_copy = copy.copy(state)
-            keys = state_copy.keys()
-            for k in keys:
-                state[k.replace('module.', '')] = state.pop(k)
-        AdaVAE.load_state_dict(state)
-        # gc.collect()
-    print('Done.')
-
     # fix pre-trained parameters before certain iterations
-    tuning_all_after_iters = 40000
+    tuning_all_after_iters = 6000
     tuning_all = False
     for name, parameter in AdaVAE.named_parameters():
         new_pars = ['c_z', 'attention_weights', 'mean', 'logvar', 'input_proj', 'attn_proj', 'Nu_fc1', 'Nu_fc2',
@@ -339,6 +331,31 @@ def train(args):
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_schedule)
     AdaVAE, optimizer = amp.initialize(AdaVAE, optimizer, opt_level=args.fp16_opt_level)
 
+    ## load ckpt
+    if args.load:
+        print('Loading model weights...')
+        state = torch.load(os.path.join(save_folder,'ckpt/model',
+                                        'model_0000048.pt'))  # , map_location='cpu' model_latest.pt
+        if 'module' in list(state.keys())[0]:  # model_path is data parallel model with attr 'module'
+            state_copy = copy.copy(state)
+            keys = state_copy.keys()
+            for k in keys:
+                state[k.replace('module.', '')] = state.pop(k)
+        ## load trained parameters
+        if not args.save_all:
+            model_dict = AdaVAE.state_dict()
+            additional_dict = {k: v for k, v in state.items() if k in model_dict}
+            model_dict.update(additional_dict)
+            AdaVAE.load_state_dict(model_dict)
+            del model_dict
+        else:
+            AdaVAE.load_state_dict(state)
+            del state
+        # optimizer.load_state_dict(torch.load(os.path.join(save_folder, 'ckpt/opt',
+        #                                                   'optimizer_0000048.pt')))
+        # gc.collect()
+    print('Done.')
+
     loss_fn = nn.CrossEntropyLoss(reduction='none')
     print('Done.')
 
@@ -352,6 +369,97 @@ def train(args):
     beta = args.beta_0
     endoftext = tokenizer.convert_tokens_to_ids("<|endoftext|>")
 
+    def val_step(val_loader):
+        AdaVAE.eval()
+
+        n_words_bpe = 0
+        n_words = 0
+        logp_sum = 0.0
+        reg_loss_sum = 0.0
+
+        logging.info("Validation loop.         Batches: %d" % len(val_loader))
+        logging.info("Validation loop. max_val_batches: %d" % max_val_batches)
+
+        with tqdm(total=min(len(val_loader), max_val_batches)) as pbar:
+            for i, val_data_dict in enumerate(val_loader):
+                with torch.no_grad():
+                    val_x_ids, val_input_ids, val_attention_mask = tokenize(val_data_dict['x'], tokenizer, device, args)
+                    val_label_onehot = F.one_hot(torch.tensor(val_data_dict['y']),
+                                             torch.tensor(ada_config.class_num)).float().to(device)
+
+                    val_loss, val_ce_loss, val_reg_loss = compute_loss(device, AdaVAE, val_x_ids, val_input_ids, val_attention_mask,
+                                                           val_label_onehot, loss_fn, 1.0, args.adv_loss)
+                    # else:
+                    #     loss, ce_loss, kl_loss = compute_loss_ae(device, AdaVAE, x_mask, x_tokens, y_mask, y_tokens,
+                    #                                              input_tokens, target_tokens, mask, loss_fn, 1.0)
+                target_tokens = val_x_ids
+                if len(target_tokens.size()) == 1:
+                    target_tokens = target_tokens.unsqueeze(0)
+                n, l = target_tokens.size()
+
+                text = target_tokens.tolist()
+                tokens = [t[:t.index(endoftext) + 1] if endoftext in t else t for t in text]
+                words_bpe = sum([len(t) for t in tokens])
+                n_words_bpe += words_bpe
+                logprob = val_ce_loss.mean()
+
+
+                logp_sum += logprob * words_bpe
+
+                n_words_bpe += len(text)
+
+                ctext = [tokenizer.decode(target_tokens[i, :]) for i in range(n)]
+                ctext = [s[s.find("<|endoftext|>") + len("<|endoftext|>"):] for s in ctext]
+                ctext = [s[:s.find("<|endoftext|>") + len("<|endoftext|>")] if "<|endoftext|>" in s else s for s in
+                         ctext]
+                words = sum([len(
+                    [t for t in re.split('("|\'|!|\?|\.|,|:| |\n|’|“|”|;|\(|\)|`)', s) if t != ' ' and t != '']) for
+                    s in ctext])
+                n_words += words
+
+                reg_loss_sum += val_reg_loss.item()
+
+                if i > max_val_batches:
+                    break
+                pbar.update(1)
+
+        loss_bpe = logp_sum / n_words_bpe
+        ppl_bpe = round(math.exp(min(logp_sum / n_words_bpe, 100)), 3)
+        ppl_word = round(math.exp(min(logp_sum / n_words, 100)), 3)
+        reg = reg_loss_sum / len(val_loader)
+
+        v_writer.add_scalar('loss', loss_bpe, num_iters)
+        v_writer.add_scalar('ppl_bpe', ppl_bpe, num_iters)
+        v_writer.add_scalar('ppl_word', ppl_word, num_iters)
+        v_writer.add_scalar('reg_loss', reg, num_iters)
+        logging.info('val loss    : %.4f' % loss_bpe)
+        logging.info('val ppl_bpe : %.4f' % ppl_bpe)
+        logging.info('val ppl_word: %.4f' % ppl_word)
+        logging.info('val reg_loss: %.4f' % reg)
+        for cl in range(ada_config.class_num):
+            bsz = 5
+            sents, _ = sample_sequence(AdaVAE, args.max_length,
+                                    torch.full([bsz,], cl).long().to(device),
+                                    batch_size=bsz, top_k=100, top_p=0.95,
+                                    device=device, sample=True, eos_token=endoftext)
+            # Sample sentences
+            print("-" * 50)
+            print(f"Sentences with label {cl}:")
+            sents = sents.tolist()
+            for i in range(len(sents)):
+                sent = sents[i]
+                sent = sent[sent.index(endoftext) + 1:]
+
+                if endoftext in sent:
+                    idx = sent.index(endoftext)
+                    sent = sent[:idx]
+
+                sent = tokenizer.decode(sent).strip()
+                print(sent)
+
+        AdaVAE.train()
+
+    # todo: add parameter saving & testing
     while num_iters < args.iterations:
         # Run epoch
         st = time.time()
@@ -368,8 +476,8 @@ def train(args):
                 label_onehot = F.one_hot(torch.tensor(data_dict['y']),
                                          torch.tensor(ada_config.class_num)).float().to(device)
 
-                # if num_iters % args.cycle >= args.cycle - args.beta_warmup:
-                #     beta = min(1.0, beta + (1. - args.beta_0) / args.beta_warmup)
+                if num_iters % args.cycle >= args.cycle - args.beta_warmup:
+                    beta = min(1.0, beta + (1. - args.beta_0) / args.beta_warmup)
 
                 if not tuning_all and num_iters >= tuning_all_after_iters:
                     AdaVAE.transformer = unfreeze_GPT2_adapters(AdaVAE.transformer, Cond_GPT2Adapter)
@@ -404,7 +512,8 @@ def train(args):
                 if args.warmup != -1:
                     scheduler.step()
 
-                if end: break
+                if end:
+                    break
                 num_iters += 1
                 pbar.update(1)
 
@@ -412,18 +521,28 @@ def train(args):
                     beta = args.beta_0
                     logging.info('KL annealing restart')
 
-                # if num_iters % 10000 == 0:
-                #     test_plot(test_loader, num_iters)
-                #     val_step(val_loader)
-                #     generate(test_loader, num_iters)
+                if num_iters % 10000 == 0:
+                    val_step(test_loader)
 
-                if num_iters % 50000 == 0:
+                if (num_iters + 1) % 30000 == 0:
                     print('Saving model...')
                     logging.info("Iteration completed: %d, remained %d" % (num_iters, args.iterations - num_iters))
                     logging.info("Saving model...")
                     logging.info('\n------------------------------------------------------')
-                    torch.save(AdaVAE.state_dict(),
-                               os.path.join(save_folder, 'model_' + '{:07d}'.format(num_iters) + '.pt'))
+
+                    if args.save_all:
+                        save_orderdict = AdaVAE.state_dict()
+                    else:
+                        save_orderdict = collections.OrderedDict()
+                        for name, parameter in AdaVAE.named_parameters():
+                            if parameter.requires_grad:
+                                save_orderdict[name] = parameter
+                    torch.save(save_orderdict,
+                               os.path.join(save_folder, 'ckpt/model',
+                                            'model_' + '{:07d}'.format(num_iters) + '.pt'))
+                    # torch.save(optimizer.state_dict(),
+                    #            os.path.join(save_folder, 'ckpt/opt',
+                    #                         'optimizer_' + '{:07d}'.format(num_iters) + '.pt'))
 
                 # if args.switch_time > 0 and num_iters == int(args.iterations * args.switch_time):
                 #     print('Switch to long sequence training')
@@ -445,81 +564,8 @@ def train(args):
     print('Training complete.')
     logging.info("Training complete.")
 
-    def val_step(val_loader):
-        AdaVAE.eval()
-
-        n_words_bpe = 0
-        n_words = 0
-        logp_sum = 0.0
-        reg_loss_sum = 0.0
-
-        logging.info("Validation loop.         Batches: %d" % len(val_loader))
-        logging.info("Validation loop. max_val_batches: %d" % max_val_batches)
-
-        # val_iter = iter(val_loader); x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask = next(val_iter)
-        with tqdm(total=min(len(val_loader), max_val_batches)) as pbar:
-            for i, (x_mask, x_tokens, input_tokens, target_tokens, mask) in enumerate(val_loader):
-                with torch.no_grad():
-                    loss, ce_loss, reg_loss = compute_loss(device, AdaVAE, input_tokens, mask, x_tokens, label_onehot, loss_fn, 1.0, args.use_adv_loss)
-                    # else:
-                    #     loss, ce_loss, kl_loss = compute_loss_ae(device, AdaVAE, x_mask, x_tokens, y_mask, y_tokens,
-                    #                                              input_tokens, target_tokens, mask, loss_fn, 1.0)
-
-                if len(target_tokens.size()) == 1:
-                    target_tokens = target_tokens.unsqueeze(0)
-                n, l = target_tokens.size()
-
-                text = target_tokens[0, :].tolist()
-                logprob = ce_loss.tolist()
-                assert len(text) == len(logprob)
-
-                # only for story
-                idx = text.index(endoftext)
-                text = text[idx + 1:]
-                logprob = logprob[idx + 1:]
-
-                if endoftext in text:
-                    idx = text.index(endoftext)
-                    text = text[:idx]
-                    logprob = logprob[:idx]
-
-                logp_sum += sum(logprob)
-
-                n_words_bpe += len(text)
-
-                story = [tokenizer.decode(target_tokens[i, :]) for i in range(n)]
-                story = [s[s.find("<|endoftext|>") + len("<|endoftext|>"):] for s in story]
-                story = [s[:s.find("<|endoftext|>") + len("<|endoftext|>")] if "<|endoftext|>" in s else s for s in
-                         story]
-                words = sum([len(
-                    [t for t in re.split('("|\'|!|\?|\.|,|:| |\n|’|“|”|;|\(|\)|`)', s) if t != ' ' and t != '']) for
-                    s in story])
-                n_words += words
-
-                reg_loss_sum += reg_loss.item()
-
-                if i > max_val_batches:
-                    break
-                pbar.update(1)
-
-        loss_bpe = logp_sum / n_words_bpe
-        ppl_bpe = round(math.exp(min(logp_sum / n_words_bpe, 100)), 3)
-        ppl_word = round(math.exp(min(logp_sum / n_words, 100)), 3)
-        reg = reg_loss_sum / len(val_loader)
-
-        v_writer.add_scalar('loss', loss_bpe, num_iters)
-        v_writer.add_scalar('ppl_bpe', ppl_bpe, num_iters)
-        v_writer.add_scalar('ppl_word', ppl_word, num_iters)
-        v_writer.add_scalar('reg_loss', reg, num_iters)
-        logging.info('val loss    : %.4f' % loss_bpe)
-        logging.info('val ppl_bpe : %.4f' % ppl_bpe)
-        logging.info('val ppl_word: %.4f' % ppl_word)
-        logging.info('val reg_loss: %.4f' % reg)
-
-        AdaVAE.train()
-
 if __name__=="__main__":
-    args = parser.parse_args('train --batch-sizes 80 --max_length 25 --add_attn --label_cond --adapter_size 50'.split())
+    args = parser.parse_args('ex0110_as64 --batch-sizes 128 --max_length 25 --add_attn --label_cond --adapter_size 64'.split())
     train(args)
 
 # class AdaGPT2VAE(pl.LightningModule):

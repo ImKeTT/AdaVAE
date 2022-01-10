@@ -216,14 +216,6 @@ class Cond_GPT2Adapter(nn.Module):
         up_projected = self.up_project(activated)
         return hidden_states + up_projected
 
-def unfreeze_GPT2_adapters(GPT2_model: nn.Module, Adapter: nn.Module) -> nn.Module:
-    # Unfreeze trainable parts — layer norms and adapters
-    for name, sub_module in GPT2_model.named_modules():
-        if isinstance(sub_module, (Adapter, nn.LayerNorm)):
-            for param_name, param in sub_module.named_parameters():
-                param.requires_grad = True
-    return GPT2_model
-
 """
 class BertAdaptedSelfOutput(nn.Module):
     def __init__(self,
@@ -455,7 +447,7 @@ class Encoder(GPT2Model):
         self.drop = nn.Dropout(config.embd_pdrop)
 
         # manually modify number of layers in encoder to accommodate GPU memory
-        n = 3  # config.n_layer
+        n = 6  # config.n_layer
         self.h = nn.ModuleList([Unmasked_AdapterBlock(config.n_ctx, config, ada_config, scale=True) for _ in range(n)])
         ## Fine-tuning encoder block
         # self.h = nn.ModuleList([Unmasked_Block(config.n_ctx, config, scale=True) for _ in range(n)])
@@ -623,7 +615,7 @@ class Decoder(GPT2Model):
         # self.output_past = config.output_past
         self.output_hidden_states = False
         self.output_attentions = False  ## True is return hidden_states
-        self.output_past = False
+        self.output_past = True
 
         self.wte = nn.Embedding(config.vocab_size, config.n_embd)
         self.wpe = nn.Embedding(config.n_positions, config.n_embd)
@@ -936,6 +928,7 @@ class AdaVAEModel(GPT2LMHeadModel):
         self.learn_prior = learn_prior
         self.use_adv_loss = adv_loss
         self.label_cond = label_cond
+        self.ada_config = ada_config
 
         self.transformer = Decoder(config, ada_config, add_input, add_attn,
                                    attn_proj_vary, label_cond)

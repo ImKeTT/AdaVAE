@@ -25,11 +25,10 @@ from apex.optimizers import FusedAdam
 from apex import amp
 from apex.fp16_utils import FP16_Optimizer
 from transformers.modeling_utils import PreTrainedModel, Conv1D, prune_conv1d_layer, SequenceSummary
-# from transformers.configuration_gpt2 import GPT2Config
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, AdamW, get_linear_schedule_with_warmup, Conv1D
 
 
-devices = '1'
+devices = '0'
 os.environ["CUDA_VISIBLE_DEVICES"] = devices
 
 parser = argparse.ArgumentParser()
@@ -41,14 +40,16 @@ parser.add_argument("--seed", type=int, default=42)
 
 # parser.add_argument('--data_type', type=str, default='t1', choices=['t' + str(i) for i in range(9)], help="t: type")
 parser.add_argument('--model_type', type=str, default='cvae', choices=['cvae'])
-parser.add_argument('--iterations', type=int, default=30000 * 3)
+parser.add_argument('--iterations', type=int, default=1000 * 3)
 parser.add_argument('--dataset', type=str, default='yelp_polarity', choices=['yelp_polarity, imdb_polariry'],
                     help="Dataset to use for training")
-parser.add_argument('--warmup', type=int, default=10000,
+parser.add_argument('--warmup', type=int, default=500,
                     help="Amount of iterations to warmup, then decay. (-1 for no warmup and decay)")
 
 parser.add_argument('--adapter_size', type=int, default=256,
                     help="Hidden size of GPT2 encoder/decoder adapter")
+parser.add_argument('--latent_size', type=int, default=768,
+                    help="Hidden size of latent code")
 parser.add_argument('--class_num', type=int, default=2,
                     help="class number for controllable generation")
 parser.add_argument('--label_emb_size', type=int, default=8,
@@ -74,9 +75,9 @@ parser.add_argument('--fp16_opt_level', default='O1', type=str, required=False)
 
 # KL cost annealing, increase beta from beta_0 to 1 in beta_warmup steps
 parser.add_argument('--beta_0', default=1.00, type=float)
-parser.add_argument('--beta_warmup', type=int, default=10000)
+parser.add_argument('--beta_warmup', type=int, default=500)
 # cyc_vae parameters
-parser.add_argument('--cycle', type=int, default=30000)
+parser.add_argument('--cycle', type=int, default=1000)
 ## trigger
 parser.add_argument('--load', action="store_true")
 parser.add_argument('--label_cond', action="store_true")
@@ -210,15 +211,15 @@ def train(args):
     logging.info("the configuration:")
     logging.info(str(args).replace(',', '\n'))
 
-    print('Loading models...')
+    logging.info('Loading models...')
     # cache_dir = os.path.join(args.out_dir, 'model_cache')
     # os.makedirs(cache_dir, exist_ok=True)
     # Load pre-trained teacher tokenizer (vocabulary)
-    tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
+    tokenizer = GPT2Tokenizer.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
     # Hack to allow tokenizing longer sequences.
     # tokenizer.max_len = int(1e12)
-    gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2')
-    print('gpt2_params:', num_params(gpt2_model))  # gpt2: 124439808
+    gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
+    logging.info(f'gpt2_params:{num_params(gpt2_model)}') # gpt2: 124439808
 
     ## GPT2 config and adapter config
     config = GPT2Config()
@@ -257,8 +258,9 @@ def train(args):
                                adapter_act='relu',
                                adapter_initializer_range=1e-2,
                                label_emb_size=args.label_emb_size,
+                               latent_size=args.latent_size,
                                class_num=args.class_num)
-
+    ## latent (z) size is n_embd = 768
     AdaVAE = AdaVAEModel(config, ada_config, add_input=args.add_input, add_attn=args.add_attn, add_softmax=args.add_softmax,
                    attn_proj_vary=args.attn_proj_vary, learn_prior=args.learn_prior, adv_loss=args.adv_loss, label_cond=args.label_cond)
     init_para_frompretrained(AdaVAE.transformer, gpt2_model.transformer, share_para=True)
@@ -276,10 +278,10 @@ def train(args):
     if AdaVAE.add_softmax:
         AdaVAE.lm_head_rep = Conv1D(*gpt2_model.lm_head.weight.size())
         # AdaVAE.lm_head_rep = LM_head_rep(*gpt2_model.lm_head.weight.size()[::-1])
-    print('AdaVAE params:', num_params(AdaVAE))  #
+    logging.info(f'AdaVAE params: {num_params(AdaVAE)}')
 
     # fix pre-trained parameters before certain iterations
-    tuning_all_after_iters = 6000
+    tuning_all_after_iters = 500
     tuning_all = False
     for name, parameter in AdaVAE.named_parameters():
         new_pars = ['c_z', 'attention_weights', 'mean', 'logvar', 'input_proj', 'attn_proj', 'Nu_fc1', 'Nu_fc2',
@@ -292,16 +294,17 @@ def train(args):
         if not any([True if n in name else False for n in new_pars]):
             parameter.requires_grad = False
         # print((name, parameter.requires_grad))
-    print('AdaVAE params with gradients:', num_params(AdaVAE))
+    logging.info(f'AdaVAE params with gradients: {num_params(AdaVAE)}')
 
-    print('Setup data...')
+    logging.info('Setup data...')
     # Batch and sequence length schedule
     assert len(args.batch_sizes) == len(args.seq_lens)
     batch_schedule = list(zip(map(int, args.batch_sizes), map(int, args.seq_lens)))
     assert len(batch_schedule) <= 2, 'Currently not supporting multiple schedule'
     args.switch_time = 0
     cur_b_schedule = len(batch_schedule) - 1 if args.switch_time == 0 else 0
-    print('Batch schedule', batch_schedule)
+    logging.info('Batch schedule')
+    logging.info(batch_schedule)
     train_loader = DataLoader(
         ConditionalGenerationDataset.from_file(f"../data/{args.dataset}/train.txt"),
         batch_size=batch_schedule[cur_b_schedule][0],
@@ -314,13 +317,13 @@ def train(args):
         pin_memory=True,
         drop_last=True,
         num_workers=args.workers)
-    print('Done.')
+    logging.info('Done.')
 
     ###
     val_loader = test_loader
     ###
 
-    print('Wrapping models and optimizers...')
+    logging.info('Wrapping models and optimizers...')
     # Apply linear scaling rule to increase batch size for short sequence training.
     lr_schedule = switch_schedule(linear_schedule(args), batch_schedule[cur_b_schedule][0] / batch_schedule[-1][0],
                                   int(args.iterations * args.switch_time))
@@ -333,7 +336,7 @@ def train(args):
 
     ## load ckpt
     if args.load:
-        print('Loading model weights...')
+        logging.info('Loading model weights...')
         state = torch.load(os.path.join(save_folder,'ckpt/model',
                                         'model_0000048.pt'))  # , map_location='cpu' model_latest.pt
         if 'module' in list(state.keys())[0]:  # model_path is data parallel model with attr 'module'
@@ -354,12 +357,12 @@ def train(args):
         # optimizer.load_state_dict(torch.load(os.path.join(save_folder, 'ckpt/opt',
         #                                                   'optimizer_0000048.pt')))
         # gc.collect()
-    print('Done.')
+    logging.info('Done.')
 
     loss_fn = nn.CrossEntropyLoss(reduction='none')
-    print('Done.')
+    logging.info('Done.')
 
-    print('Begin training iterations')
+    logging.info('Begin training iterations')
     logging.info("Begin training iterations")
     max_val_batches = 20000  # max num. of val batches
     logging.info("Total iteration: %d" % args.iterations)
@@ -443,8 +446,8 @@ def train(args):
                                     batch_size=bsz, top_k=100, top_p=0.95,
                                     device=device, sample=True, eos_token=endoftext)
             # Sample sentences
-            print("-" * 50)
-            print(f"Sentences with label {cl}:")
+            logging.info("-" * 50)
+            logging.info(f"Sentences with label {cl}:")
             sents = sents.tolist()
             for i in range(len(sents)):
                 sent = sents[i]
@@ -455,11 +458,10 @@ def train(args):
                     sent = sent[:idx]
 
                 sent = tokenizer.decode(sent).strip()
-                print(sent)
+                logging.info(sent)
 
         AdaVAE.train()
 
-    # todo: add parameter saving & testing
     while num_iters < args.iterations:
         # Run epoch
         st = time.time()
@@ -485,7 +487,7 @@ def train(args):
                     for name, parameter in AdaVAE.named_parameters():
                         print((name, parameter.requires_grad))
                     #     parameter.requires_grad = True
-                    print('AdaVAE params with gradients:', num_params(AdaVAE))
+                    logging.info(f'AdaVAE params with gradients:{num_params(AdaVAE)}')
                     tuning_all = True
 
                 loss, ce_loss, reg_loss = train_step(device, AdaVAE, optimizer, x_ids, input_ids, attention_mask,
@@ -521,11 +523,11 @@ def train(args):
                     beta = args.beta_0
                     logging.info('KL annealing restart')
 
-                if num_iters % 10000 == 0:
+                if num_iters % 200 == 0:
                     val_step(test_loader)
 
-                if (num_iters + 1) % 30000 == 0:
-                    print('Saving model...')
+                if (num_iters + 1) % 1000 == 0:
+                    logging.info('Saving model...')
                     logging.info("Iteration completed: %d, remained %d" % (num_iters, args.iterations - num_iters))
                     logging.info("Saving model...")
                     logging.info('\n------------------------------------------------------')
@@ -560,12 +562,19 @@ def train(args):
             e += 1
             logging.info("Training loop. The ith epoch completed: %d" % e)
 
-    torch.save(AdaVAE.state_dict(), os.path.join(save_folder, 'model_latest.pt'))
-    print('Training complete.')
+    if args.save_all:
+        save_orderdict = AdaVAE.state_dict()
+    else:
+        save_orderdict = collections.OrderedDict()
+        for name, parameter in AdaVAE.named_parameters():
+            if parameter.requires_grad:
+                save_orderdict[name] = parameter
+    torch.save(save_orderdict, os.path.join(save_folder, 'model_latest.pt'))
+    logging.info('Training complete.')
     logging.info("Training complete.")
 
 if __name__=="__main__":
-    args = parser.parse_args('ex0110_as64 --batch-sizes 128 --max_length 25 --add_attn --label_cond --adapter_size 64'.split())
+    args = parser.parse_args('ex0116_as64_iter6k --batch-sizes 128 --max_length 25 --add_attn --label_cond --adapter_size 64 --latent_size 60'.split())
     train(args)
 
 # class AdaGPT2VAE(pl.LightningModule):

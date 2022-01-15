@@ -36,7 +36,7 @@ class AverageSelfAttention(nn.Module):
         if isinstance(ada_config.adapter_act, str):
             self.activation = ACT2FN[ada_config.adapter_act]
         else:
-            self.activation = ada_config.adapter_actthre
+            self.activation = ada_config.adapter_act
 
     def forward(self, inputs, attention_mask=None):
 
@@ -267,7 +267,7 @@ class Unmasked_Block(Block):
     to allow full information scope.
     Optimus uses BERT (bi-directional) to achieve this goal
     """
-    def __init__(self, n_ctx, config, scale=False):
+    def __init__(self, n_ctx, config, ada_config, scale=False):
         super(Block, self).__init__()
         nx = config.n_embd
         self.ln_1 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
@@ -277,7 +277,7 @@ class Unmasked_Block(Block):
 
 ## Additive attention block for method 2 in the paper
 class Cond_Block(Block):
-    def __init__(self, n_ctx, config, scale=False):
+    def __init__(self, n_ctx, config, ada_config, scale=False):
         super(Block, self).__init__()
         nx = config.n_embd
         self.ln_1 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
@@ -459,7 +459,7 @@ class Encoder(GPT2Model):
         # added code here
         self.averageSelfAttention = AverageSelfAttention(config.n_embd, ada_config)
         nx = config.n_embd
-        nz = config.n_embd
+        nz = ada_config.latent_size
         self.mean = Conv1D(nz, nx)
         self.logvar = Conv1D(nz, nx)
 
@@ -623,13 +623,13 @@ class Decoder(GPT2Model):
 
         ## choose different conditional generation methods (word embedding/attention bolck/softmax decoding)
         if self.add_input:
-            nz = config.n_embd
+            nz = ada_config.latent_size
             nx = config.n_embd
             nl = ada_config.label_emb_size
             self.input_proj = nn.Linear(nz + nl, nx, bias=False)
 
         if self.add_attn:
-            nz = config.n_embd
+            nz = ada_config.latent_size
             nx = config.n_embd
             n = config.n_layer
             nl = ada_config.label_emb_size
@@ -1005,7 +1005,7 @@ class AdaVAEModel(GPT2LMHeadModel):
         ## mean, logvar, last hidden state, (presents), (all hidden_states), (attentions)
         posterior_mean, posterior_logvar = self.encoder(input_ids=input_ids, attention_mask=attention_mask)[:2]
 
-        prior_mean = prior_logvar = torch.zeros([input_ids.size(0), self.config.n_embd], device=input_ids.device)
+        prior_mean = prior_logvar = torch.zeros([input_ids.size(0), self.ada_config.latent_size], device=input_ids.device)
         prior_mean, prior_logvar = prior_mean.to(posterior_mean.dtype), prior_logvar.to(posterior_logvar.dtype)
 
         if from_prior:

@@ -9,6 +9,7 @@ class AdapterConfig(NamedTuple):
     adapter_act: Union[str, Callable]
     adapter_initializer_range: float
     label_emb_size: int
+    latent_size: int
     class_num: int
 
 

@@ -11,6 +11,7 @@ class AdapterConfig(NamedTuple):
     label_emb_size: int
     latent_size: int
     class_num: int
+    n_layer: int
 
 
 def freeze_all_parameters(model: nn.Module) -> nn.Module:

@@ -63,7 +63,7 @@ def sample_sequence(model, length, label, batch_size=None,
                     sample=True, eos_token=None, model_type='cvae'):
     with torch.no_grad():
         # if model_type == 'cvae':
-        z = torch.randn([batch_size, model.config.n_embd], device=device)
+        z = torch.randn([batch_size, model.ada_config.latent_size], device=device)
         label_emb = model.label_embedding(F.one_hot(label,
                                                     torch.tensor(model.ada_config.class_num)).float().to(device))
         #     try:

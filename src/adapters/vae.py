@@ -447,7 +447,7 @@ class Encoder(GPT2Model):
         self.drop = nn.Dropout(config.embd_pdrop)
 
         # manually modify number of layers in encoder to accommodate GPU memory
-        n = 6  # config.n_layer
+        n = ada_config.n_layer
         self.h = nn.ModuleList([Unmasked_AdapterBlock(config.n_ctx, config, ada_config, scale=True) for _ in range(n)])
         ## Fine-tuning encoder block
         # self.h = nn.ModuleList([Unmasked_Block(config.n_ctx, config, scale=True) for _ in range(n)])

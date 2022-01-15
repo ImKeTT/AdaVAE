@@ -28,8 +28,8 @@ from transformers.modeling_utils import PreTrainedModel, Conv1D, prune_conv1d_la
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, AdamW, get_linear_schedule_with_warmup, Conv1D
 
 
-devices = '0'
-os.environ["CUDA_VISIBLE_DEVICES"] = devices
+# devices = '0'
+# os.environ["CUDA_VISIBLE_DEVICES"] = devices
 
 parser = argparse.ArgumentParser()
 parser.add_argument('experiment', type=str)
@@ -40,16 +40,18 @@ parser.add_argument("--seed", type=int, default=42)
 
 # parser.add_argument('--data_type', type=str, default='t1', choices=['t' + str(i) for i in range(9)], help="t: type")
 parser.add_argument('--model_type', type=str, default='cvae', choices=['cvae'])
-parser.add_argument('--iterations', type=int, default=1000 * 3)
+parser.add_argument('--iterations', type=int, default=2000 * 3)
 parser.add_argument('--dataset', type=str, default='yelp_polarity', choices=['yelp_polarity, imdb_polariry'],
                     help="Dataset to use for training")
-parser.add_argument('--warmup', type=int, default=500,
+parser.add_argument('--warmup', type=int, default=1000,
                     help="Amount of iterations to warmup, then decay. (-1 for no warmup and decay)")
 
 parser.add_argument('--adapter_size', type=int, default=256,
                     help="Hidden size of GPT2 encoder/decoder adapter")
 parser.add_argument('--latent_size', type=int, default=768,
                     help="Hidden size of latent code")
+parser.add_argument('--decoder_n_layer', type=int, default=6,
+                    help="attention layer number of GPT-2 decoder")
 parser.add_argument('--class_num', type=int, default=2,
                     help="class number for controllable generation")
 parser.add_argument('--label_emb_size', type=int, default=8,
@@ -75,9 +77,9 @@ parser.add_argument('--fp16_opt_level', default='O1', type=str, required=False)
 
 # KL cost annealing, increase beta from beta_0 to 1 in beta_warmup steps
 parser.add_argument('--beta_0', default=1.00, type=float)
-parser.add_argument('--beta_warmup', type=int, default=500)
+parser.add_argument('--beta_warmup', type=int, default=1000)
 # cyc_vae parameters
-parser.add_argument('--cycle', type=int, default=1000)
+parser.add_argument('--cycle', type=int, default=2000)
 ## trigger
 parser.add_argument('--load', action="store_true")
 parser.add_argument('--label_cond', action="store_true")
@@ -186,7 +188,7 @@ def train(args):
     if gpu:
         print("There are ", torch.cuda.device_count(), " available GPUs!")
         # print('Setting GPUs {}'.format(args.device))
-        print('Using GPU devices {}'.format(devices))
+        # print('Using GPU devices {}'.format(devices))
         torch.cuda.set_device(args.gpu)
         print('Current single GPU: {}'.format(torch.cuda.current_device()))
     device = torch.device(args.gpu if gpu else "cpu")
@@ -259,7 +261,8 @@ def train(args):
                                adapter_initializer_range=1e-2,
                                label_emb_size=args.label_emb_size,
                                latent_size=args.latent_size,
-                               class_num=args.class_num)
+                               class_num=args.class_num,
+                               n_layer=args.decoder_n_layer)
     ## latent (z) size is n_embd = 768
     AdaVAE = AdaVAEModel(config, ada_config, add_input=args.add_input, add_attn=args.add_attn, add_softmax=args.add_softmax,
                    attn_proj_vary=args.attn_proj_vary, learn_prior=args.learn_prior, adv_loss=args.adv_loss, label_cond=args.label_cond)
@@ -281,7 +284,9 @@ def train(args):
     logging.info(f'AdaVAE params: {num_params(AdaVAE)}')
 
     # fix pre-trained parameters before certain iterations
-    tuning_all_after_iters = 500
+    tuning_all_after_iters = int(args.iterations/6)
+    args.warmup = args.beta_warmup = int(args.iterations/6)
+    args.cycle = int(args.iterations/3)
     tuning_all = False
     for name, parameter in AdaVAE.named_parameters():
         new_pars = ['c_z', 'attention_weights', 'mean', 'logvar', 'input_proj', 'attn_proj', 'Nu_fc1', 'Nu_fc2',
@@ -574,7 +579,8 @@ def train(args):
     logging.info("Training complete.")
 
 if __name__=="__main__":
-    args = parser.parse_args('ex0116_as64_iter6k --batch-sizes 128 --max_length 25 --add_attn --label_cond --adapter_size 64 --latent_size 60'.split())
+    args = parser.parse_args()
+    # args = parser.parse_args('ex0116_as64_iter6k --batch-sizes 128 --max_length 25 --add_attn --label_cond --adapter_size 64 --latent_size 60 --decoder_n_layer 6'.split())
     train(args)
 
 # class AdaGPT2VAE(pl.LightningModule):

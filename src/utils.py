@@ -23,10 +23,36 @@ import urllib.request
 import json, re
 import numpy as np
 import copy
+from tqdm import tqdm
 from scipy.spatial.distance import cdist
 from tqdm import trange
 from random import shuffle
 
+#############################
+######## model utils ########
+#############################
+def safe_log(z):
+    return torch.log(z + 1e-7)
+
+def log_sum_exp(value: torch.Tensor, dim: int=None, keepdim: bool=False):
+    """Numerically stable implementation of the operation
+    value.exp().sum(dim, keepdim).log()
+    """
+    if dim is not None:
+        m, _ = torch.max(value, dim=dim, keepdim=True)
+        value0 = value - m
+        if keepdim is False:
+            m = m.squeeze(dim)
+        return m + torch.log(torch.sum(torch.exp(value0), dim=dim, keepdim=keepdim))
+    else:
+        m = torch.max(value)
+        sum_exp = torch.sum(torch.exp(value - m))
+        return m + torch.log(sum_exp)
+
+
+################################
+######## training utils ########
+################################
 def top_k_top_p_filtering(logits, top_k=100, top_p=0.95, filter_value=-float('Inf')):
     """ Filter a distribution of logits using top-k and/or nucleus (top-p) filtering
         Args:
@@ -172,3 +198,7 @@ def linear_schedule(args):
         return max((e - args.iterations) / (args.warmup - args.iterations), 0)
 
     return f
+
+###############################
+######## metrics utils ########
+###############################

@@ -13,7 +13,6 @@ import torch, math, time, os, argparse, re, copy
 from logger import Logger
 from tensorboardX import SummaryWriter
 from tqdm import tqdm
-from typing import Optional
 import torch.nn.functional as F
 from adapters.vae import *
 from utils import *
@@ -46,6 +45,7 @@ parser.add_argument('--dataset', type=str, default='yelp_polarity', choices=['ye
 parser.add_argument('--warmup', type=int, default=1000,
                     help="Amount of iterations to warmup, then decay. (-1 for no warmup and decay)")
 
+## variable size
 parser.add_argument('--adapter_size', type=int, default=256,
                     help="Hidden size of GPT2 encoder/decoder adapter")
 parser.add_argument('--latent_size', type=int, default=768,
@@ -56,6 +56,8 @@ parser.add_argument('--class_num', type=int, default=2,
                     help="class number for controllable generation")
 parser.add_argument('--label_emb_size', type=int, default=8,
                     help="label embedding size")
+
+## training paramters
 parser.add_argument('--batch-sizes', nargs='+', type=int, default=[1],
                     help='batch size per GPU. Lists the schedule.')
 parser.add_argument('--seq-lens', nargs='+', type=int, default=[30],
@@ -66,8 +68,15 @@ parser.add_argument('--switch-time', type=float, default=0,
                     help="Percentage of iterations to spend on short sequence training.")
 parser.add_argument('--data-dir', type=str, default='data')
 parser.add_argument('--out-dir', type=str, default='out')
+parser.add_argument('--adapter_init', type=str, default='other',
+                    help="parameter initialization method for adapter layers.")
 parser.add_argument('--workers', default=2, type=int, metavar='N',
                     help='number of data loading workers')
+
+## metrics
+parser.add_argument('--au_delta', type=float, default=0.01,
+                    help="threshold for activated unit calculation.")
+
 # use GPU
 parser.add_argument('--gpu', default=0, type=int)
 parser.add_argument('--no_gpu', action="store_true")
@@ -78,8 +87,10 @@ parser.add_argument('--fp16_opt_level', default='O1', type=str, required=False)
 # KL cost annealing, increase beta from beta_0 to 1 in beta_warmup steps
 parser.add_argument('--beta_0', default=1.00, type=float)
 parser.add_argument('--beta_warmup', type=int, default=1000)
+
 # cyc_vae parameters
 parser.add_argument('--cycle', type=int, default=2000)
+
 ## trigger
 parser.add_argument('--load', action="store_true")
 parser.add_argument('--label_cond', action="store_true")
@@ -113,7 +124,9 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, label_onehot, 
 
     outputs = model(input_ids=input_tokens, attention_mask=att_mask, label_onehot=label_onehot, from_mean=True)
     logits = outputs[0]
-    regularization_loss = outputs[-1]
+    regularization_loss = outputs[-3]
+    mean = outputs[-2]
+    logvar = outputs[-1]
     if use_adv_loss:
         d_loss, g_loss = regularization_loss[0], regularization_loss[1]
     else:
@@ -135,7 +148,7 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, label_onehot, 
         kl_loss = kl_loss.mean()
         loss = ce_loss.mean() + beta * kl_loss
 
-    return loss, ce_loss, regularization_loss
+    return loss, ce_loss, regularization_loss, mean, logvar
 
 
 def tokenize(texts, tokenizer, device, args):
@@ -164,7 +177,7 @@ def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, label
     #     output.append((loss.item(), ce_loss.mean().item(), kl_loss.item()))
 
     optimizer.zero_grad()
-    loss, ce_loss, reg_loss = compute_loss(device, model, x_tokens, input_tokens, att_mask, label_onehot, loss_fn,
+    loss, ce_loss, reg_loss, _, _ = compute_loss(device, model, x_tokens, input_tokens, att_mask, label_onehot, loss_fn,
                                           beta, use_adv_loss)
     with amp.scale_loss(loss, optimizer) as scaled_loss:
         scaled_loss.backward()
@@ -222,6 +235,7 @@ def train(args):
     # tokenizer.max_len = int(1e12)
     gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
     logging.info(f'gpt2_params:{num_params(gpt2_model)}') # gpt2: 124439808
+    logging.info(f'gpt2_transformer_params:{num_params(gpt2_model.transformer)}')
 
     ## GPT2 config and adapter config
     config = GPT2Config()
@@ -262,7 +276,8 @@ def train(args):
                                label_emb_size=args.label_emb_size,
                                latent_size=args.latent_size,
                                class_num=args.class_num,
-                               n_layer=args.decoder_n_layer)
+                               n_layer=args.decoder_n_layer,
+                               init=args.adapter_init)
     ## latent (z) size is n_embd = 768
     AdaVAE = AdaVAEModel(config, ada_config, add_input=args.add_input, add_attn=args.add_attn, add_softmax=args.add_softmax,
                    attn_proj_vary=args.attn_proj_vary, learn_prior=args.learn_prior, adv_loss=args.adv_loss, label_cond=args.label_cond)
@@ -382,8 +397,13 @@ def train(args):
 
         n_words_bpe = 0
         n_words = 0
+        n_examples = 0
+        cnt_au = 0
         logp_sum = 0.0
         reg_loss_sum = 0.0
+
+        mu_batch_list, logvar_batch_list = [], []
+        neg_entropy = 0.
 
         logging.info("Validation loop.         Batches: %d" % len(val_loader))
         logging.info("Validation loop. max_val_batches: %d" % max_val_batches)
@@ -395,11 +415,15 @@ def train(args):
                     val_label_onehot = F.one_hot(torch.tensor(val_data_dict['y']),
                                              torch.tensor(ada_config.class_num)).float().to(device)
 
-                    val_loss, val_ce_loss, val_reg_loss = compute_loss(device, AdaVAE, val_x_ids, val_input_ids, val_attention_mask,
-                                                           val_label_onehot, loss_fn, 1.0, args.adv_loss)
+                    val_loss, val_ce_loss, val_reg_loss, val_mu, val_lv = compute_loss(device, AdaVAE, val_x_ids,
+                                                                                       val_input_ids, val_attention_mask,
+                                                                                       val_label_onehot, loss_fn, 1.0, args.adv_loss)
                     # else:
                     #     loss, ce_loss, kl_loss = compute_loss_ae(device, AdaVAE, x_mask, x_tokens, y_mask, y_tokens,
                     #                                              input_tokens, target_tokens, mask, loss_fn, 1.0)
+                """
+                calculate text perplexity
+                """
                 target_tokens = val_x_ids
                 if len(target_tokens.size()) == 1:
                     target_tokens = target_tokens.unsqueeze(0)
@@ -427,23 +451,121 @@ def train(args):
 
                 reg_loss_sum += val_reg_loss.item()
 
+                """
+                calculate mutual information (mi) Stage 1
+                """
+                n_examples += n
+                nz = val_mu.size(1)
+                # E_{q(z|x)}log(q(z|x)) = -0.5*nz*log(2*\pi) - 0.5*(1+logvar).sum(-1)
+                neg_entropy += (-0.5 * nz * math.log(2 * math.pi) - 0.5 * (1 + val_lv).sum(-1)).sum().item()
+                mu_batch_list += [val_mu.cpu()]
+                logvar_batch_list += [val_lv.cpu()]
+
+                """
+                compute the number of active units (au) Stage 1
+                """
+                if cnt_au == 0:
+                    means_sum = val_mu.sum(dim=0, keepdim=True)
+                else:
+                    means_sum = means_sum + val_mu.sum(dim=0, keepdim=True)
+                cnt_au += val_mu.size(0)
+
+
                 if i > max_val_batches:
                     break
                 pbar.update(1)
 
+        neg_entropy = neg_entropy / n_examples
+        mean_mean = means_sum / cnt_au
         loss_bpe = logp_sum / n_words_bpe
         ppl_bpe = round(math.exp(min(logp_sum / n_words_bpe, 100)), 3)
         ppl_word = round(math.exp(min(logp_sum / n_words, 100)), 3)
         reg = reg_loss_sum / len(val_loader)
 
+        """
+        calculate mi and au Stage 2
+        """
+        n_examples = 0
+        log_qz = 0.
+        for i in tqdm(range(len(mu_batch_list)), desc="Evaluating MI, Stage 2"):
+            ###############
+            # get z_samples
+            ###############
+            mu, logvar = mu_batch_list[i].cuda(), logvar_batch_list[i].cuda()
+
+            # [z_batch, 1, nz]
+            with torch.no_grad():
+                z_samples = AdaVAE.reparameterize(mu, logvar).unsqueeze(1)
+
+            z_samples = z_samples.view(-1, 1, nz)
+            n_examples += z_samples.size(0)
+
+            ###############
+            # compute density
+            ###############
+            # [1, x_batch, nz]
+            # mu, logvar = mu_batch_list[i].cuda(), logvar_batch_list[i].cuda()
+            # indices = list(np.random.choice(np.arange(len(mu_batch_list)), 10)) + [i]
+            indices = np.arange(len(mu_batch_list))
+            mu = torch.cat([mu_batch_list[_] for _ in indices], dim=0).cuda()
+            logvar = torch.cat([logvar_batch_list[_] for _ in indices], dim=0).cuda()
+            x_batch, nz = mu.size()
+
+            mu, logvar = mu.unsqueeze(0), logvar.unsqueeze(0)
+            var = logvar.exp()
+
+            # (z_batch, x_batch, nz)
+            dev = z_samples - mu
+
+            # (z_batch, x_batch)
+            log_density = -0.5 * ((dev ** 2) / var).sum(dim=-1) - \
+                          0.5 * (nz * math.log(2 * math.pi) + logvar.sum(-1))
+
+            # log q(z): aggregate posterior
+            # [z_batch]
+            log_qz += (log_sum_exp(log_density, dim=1) - math.log(x_batch)).sum(-1)
+
+        log_qz /= n_examples
+        mi = (neg_entropy - log_qz).item()
+
+        """
+        calculate au Stage 2
+        """
+        cnt_au = 0
+        with tqdm(total=min(len(val_loader), max_val_batches)) as pbar:
+            for i, val_data_dict in enumerate(val_loader):
+                with torch.no_grad():
+                    val_x_ids, val_input_ids, val_attention_mask = tokenize(val_data_dict['x'], tokenizer, device, args)
+                    val_label_onehot = F.one_hot(torch.tensor(val_data_dict['y']),
+                                             torch.tensor(ada_config.class_num)).float().to(device)
+
+                    val_loss, val_ce_loss, val_reg_loss, val_mu, val_lv = compute_loss(device, AdaVAE, val_x_ids,
+                                                                                       val_input_ids, val_attention_mask,
+                                                                                       val_label_onehot, loss_fn, 1.0, args.adv_loss)
+                if cnt_au == 0:
+                    var_sum = ((val_mu - mean_mean) ** 2).sum(dim=0)
+                else:
+                    var_sum = var_sum + ((val_mu - mean_mean) ** 2).sum(dim=0)
+                cnt_au += val_mu.size(0)
+
+        # (nz)
+        au_var = var_sum / (cnt_au - 1)
+        n_au = (au_var >= args.au_delta).sum().item()
+
+
+
         v_writer.add_scalar('loss', loss_bpe, num_iters)
         v_writer.add_scalar('ppl_bpe', ppl_bpe, num_iters)
         v_writer.add_scalar('ppl_word', ppl_word, num_iters)
         v_writer.add_scalar('reg_loss', reg, num_iters)
+        v_writer.add_scalar('mutual information', mi, num_iters)
+        v_writer.add_scalar('activagte unit', n_au, num_iters)
         logging.info('val loss    : %.4f' % loss_bpe)
         logging.info('val ppl_bpe : %.4f' % ppl_bpe)
         logging.info('val ppl_word: %.4f' % ppl_word)
         logging.info('val reg_loss: %.4f' % reg)
+        logging.info('val MI      : %.4f' % mi)
+        logging.info('val AU      : %.4f' % n_au)
         for cl in range(ada_config.class_num):
             bsz = 5
             sents, _ = sample_sequence(AdaVAE, args.max_length,

@@ -87,6 +87,7 @@ parser.add_argument('--fp16_opt_level', default='O1', type=str, required=False)
 # KL cost annealing, increase beta from beta_0 to 1 in beta_warmup steps
 parser.add_argument('--beta_0', default=1.00, type=float)
 parser.add_argument('--beta_warmup', type=int, default=1000)
+parser.add_argument('--kl_rate', type=float, default=0.0)
 
 # cyc_vae parameters
 parser.add_argument('--cycle', type=int, default=2000)
@@ -105,7 +106,7 @@ parser.add_argument('--learn_prior', action="store_true")
 # args = parser.parse_args('test --batch-sizes 1 --seq-lens 1024 '
 #                          '--add_input --learn_prior --fp16'.split()) # wi.12.proj_vary_beta_cvae
 
-def compute_loss(device, model, x_tokens, input_tokens, att_mask, label_onehot, loss_fn, beta, use_adv_loss):
+def compute_loss(device, model, x_tokens, input_tokens, att_mask, label_onehot, loss_fn, beta, kl_rate, use_adv_loss):
     """
 
     :param device:
@@ -146,7 +147,7 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, label_onehot, 
         loss = ce_loss.mean() + beta * g_loss + d_loss
     else:
         kl_loss = kl_loss.mean()
-        loss = ce_loss.mean() + beta * kl_loss
+        loss = ce_loss.mean() + beta * max(kl_loss, kl_rate)
 
     return loss, ce_loss, regularization_loss, mean, logvar
 
@@ -162,7 +163,7 @@ def tokenize(texts, tokenizer, device, args):
     ## target, input tokens, mask
     return x_ids, input_ids, attention_mask
 
-def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, label_onehot, loss_fn, beta, use_adv_loss, model_type):
+def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, label_onehot, loss_fn, beta, kl_rate, use_adv_loss, model_type):
     # output = []
     # if model_type == 'ae_vae_fusion':
     #     optimizer.zero_grad()
@@ -178,7 +179,7 @@ def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, label
 
     optimizer.zero_grad()
     loss, ce_loss, reg_loss, _, _ = compute_loss(device, model, x_tokens, input_tokens, att_mask, label_onehot, loss_fn,
-                                          beta, use_adv_loss)
+                                          beta, kl_rate, use_adv_loss)
     with amp.scale_loss(loss, optimizer) as scaled_loss:
         scaled_loss.backward()
         torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), 5.0)  # max_grad_norm=1.0
@@ -417,7 +418,7 @@ def train(args):
 
                     val_loss, val_ce_loss, val_reg_loss, val_mu, val_lv = compute_loss(device, AdaVAE, val_x_ids,
                                                                                        val_input_ids, val_attention_mask,
-                                                                                       val_label_onehot, loss_fn, 1.0, args.adv_loss)
+                                                                                       val_label_onehot, loss_fn, 1.0, 0.0, args.adv_loss)
                     # else:
                     #     loss, ce_loss, kl_loss = compute_loss_ae(device, AdaVAE, x_mask, x_tokens, y_mask, y_tokens,
                     #                                              input_tokens, target_tokens, mask, loss_fn, 1.0)
@@ -541,7 +542,7 @@ def train(args):
 
                     val_loss, val_ce_loss, val_reg_loss, val_mu, val_lv = compute_loss(device, AdaVAE, val_x_ids,
                                                                                        val_input_ids, val_attention_mask,
-                                                                                       val_label_onehot, loss_fn, 1.0, args.adv_loss)
+                                                                                       val_label_onehot, loss_fn, 1.0, 0.0, args.adv_loss)
                 if cnt_au == 0:
                     var_sum = ((val_mu - mean_mean) ** 2).sum(dim=0)
                 else:
@@ -618,7 +619,7 @@ def train(args):
                     tuning_all = True
 
                 loss, ce_loss, reg_loss = train_step(device, AdaVAE, optimizer, x_ids, input_ids, attention_mask,
-                                    label_onehot, loss_fn, beta, args.adv_loss, args.model_type)
+                                    label_onehot, loss_fn, beta, args.kl_rate, args.adv_loss, args.model_type)
 
                 lr = scheduler.get_last_lr()[0]
                 # Log to Tensorboard

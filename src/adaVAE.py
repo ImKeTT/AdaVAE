@@ -6,7 +6,6 @@
 @email: tuisaac163@gmail.com
 @feature: #Enter features here
 """
-from adapters import *
 import numpy as np
 import collections
 import torch, math, time, os, argparse, re, copy
@@ -14,9 +13,9 @@ from logger import Logger
 from tensorboardX import SummaryWriter
 from tqdm import tqdm
 import torch.nn.functional as F
-from adapters.vae import *
-from utils import *
-from adapters.common import AdapterConfig
+from src.adapters.vae import *
+from src.utils import *
+from src.adapters.common import AdapterConfig
 from data import ConditionalGenerationDataset
 
 from torch.utils.data import Dataset, DataLoader
@@ -28,7 +27,7 @@ from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, AdamW, get_
 
 
 # devices = '0'
-# os.environ["CUDA_VISIBLE_DEVICES"] = devices
+os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 
 parser = argparse.ArgumentParser()
 parser.add_argument('experiment', type=str)
@@ -45,7 +44,7 @@ parser.add_argument('--dataset', type=str, default='yelp_polarity', choices=['ye
 parser.add_argument('--warmup', type=int, default=1000,
                     help="Amount of iterations to warmup, then decay. (-1 for no warmup and decay)")
 
-## variable size
+## mode options
 parser.add_argument('--adapter_size', type=int, default=256,
                     help="Hidden size of GPT2 encoder/decoder adapter")
 parser.add_argument('--latent_size', type=int, default=768,
@@ -56,6 +55,11 @@ parser.add_argument('--class_num', type=int, default=2,
                     help="class number for controllable generation")
 parser.add_argument('--label_emb_size', type=int, default=8,
                     help="label embedding size")
+parser.add_argument('--adapter_scalar', type=str, default="1.0",
+                    help="adapter scalar")
+parser.add_argument('--ffn_option', type=str, default="parallel_ffn",
+                    choices=['sequential', 'parallel_attn', 'parallel_ffn', 'pfeiffer'],
+                    help="adapter type option")
 
 ## training paramters
 parser.add_argument('--batch-sizes', nargs='+', type=int, default=[1],
@@ -278,7 +282,10 @@ def train(args):
                                latent_size=args.latent_size,
                                class_num=args.class_num,
                                n_layer=args.decoder_n_layer,
-                               init=args.adapter_init)
+                               init=args.adapter_init,
+                               adapter_scalar=args.adapter_scalar,
+                               ffn_option=args.ffn_option)
+    assert ada_config.ffn_option in ['sequential', 'parallel_attn', 'parallel_ffn', 'pfeiffer'], 'expect proper ffn_option'
     ## latent (z) size is n_embd = 768
     AdaVAE = AdaVAEModel(config, ada_config, add_input=args.add_input, add_attn=args.add_attn, add_softmax=args.add_softmax,
                    attn_proj_vary=args.attn_proj_vary, learn_prior=args.learn_prior, adv_loss=args.adv_loss, label_cond=args.label_cond)
@@ -409,7 +416,7 @@ def train(args):
         logging.info("Validation loop.         Batches: %d" % len(val_loader))
         logging.info("Validation loop. max_val_batches: %d" % max_val_batches)
 
-        with tqdm(total=min(len(val_loader), max_val_batches)) as pbar:
+        with tqdm(total=min(len(val_loader), max_val_batches), desc="Evaluating Model") as pbar:
             for i, val_data_dict in enumerate(val_loader):
                 with torch.no_grad():
                     val_x_ids, val_input_ids, val_attention_mask = tokenize(val_data_dict['x'], tokenizer, device, args)
@@ -526,6 +533,7 @@ def train(args):
             # [z_batch]
             log_qz += (log_sum_exp(log_density, dim=1) - math.log(x_batch)).sum(-1)
 
+
         log_qz /= n_examples
         mi = (neg_entropy - log_qz).item()
 
@@ -533,7 +541,7 @@ def train(args):
         calculate au Stage 2
         """
         cnt_au = 0
-        with tqdm(total=min(len(val_loader), max_val_batches)) as pbar:
+        with tqdm(total=min(len(val_loader), max_val_batches), desc="Evaluating AU, Stage 2") as pbar:
             for i, val_data_dict in enumerate(val_loader):
                 with torch.no_grad():
                     val_x_ids, val_input_ids, val_attention_mask = tokenize(val_data_dict['x'], tokenizer, device, args)
@@ -548,6 +556,10 @@ def train(args):
                 else:
                     var_sum = var_sum + ((val_mu - mean_mean) ** 2).sum(dim=0)
                 cnt_au += val_mu.size(0)
+
+                if i > max_val_batches:
+                    break
+                pbar.update(1)
 
         # (nz)
         au_var = var_sum / (cnt_au - 1)
@@ -651,7 +663,7 @@ def train(args):
                     beta = args.beta_0
                     logging.info('KL annealing restart')
 
-                if num_iters % 200 == 0:
+                if num_iters % 1 == 0: #200 == 0:
                     val_step(test_loader)
 
                 if (num_iters + 1) % 1000 == 0:
@@ -702,8 +714,9 @@ def train(args):
     logging.info("Training complete.")
 
 if __name__=="__main__":
-    args = parser.parse_args()
+    # args = parser.parse_args()
     # args = parser.parse_args('ex0116_as64_iter6k --batch-sizes 128 --max_length 25 --add_attn --label_cond --adapter_size 64 --latent_size 60 --decoder_n_layer 6'.split())
+    args = parser.parse_args('test --batch-sizes 128 --max_length 25 --add_attn --label_cond --adapter_size 64 --latent_size 60 --decoder_n_layer 6'.split())
     train(args)
 
 # class AdaGPT2VAE(pl.LightningModule):

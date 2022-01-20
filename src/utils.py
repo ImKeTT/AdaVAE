@@ -90,9 +90,9 @@ def sample_sequence(model, length, label, batch_size=None,
                     sample=True, eos_token=None, model_type='cvae'):
     with torch.no_grad():
         # if model_type == 'cvae':
-        z = torch.randn([batch_size, model.ada_config.latent_size], device=device)
+        z = torch.randn([batch_size, model.AdapterConfig.latent_size], device=device)
         label_emb = model.label_embedding(F.one_hot(label,
-                                                    torch.tensor(model.ada_config.class_num)).float().to(device))
+                                                    torch.tensor(model.AdapterConfig.class_num)).float().to(device))
         #     try:
         #         prior_mean, prior_logvar = model.encoder_prior(input_ids=x_tokens, attention_mask=x_mask)[:2]
         #     except:
@@ -167,19 +167,14 @@ def init_para_frompretrained(m, pm, share_para=False):
     m.ln_f.weight = pm.ln_f.weight if share_para else copy.copy(pm.ln_f.weight)
     m.ln_f.bias = pm.ln_f.bias if share_para else copy.copy(pm.ln_f.bias)
 
-def unfreeze_GPT2_adapters(GPT2_model: nn.Module, Adapter: nn.Module) -> nn.Module:
+def unfreeze_GPT2_adapters(GPT2_model: nn.Module, Adapters: list) -> nn.Module:
     # Unfreeze trainable parts — layer norms and adapters
     for name, sub_module in GPT2_model.named_modules():
-        if isinstance(sub_module, (Adapter, nn.LayerNorm)):
-            for param_name, param in sub_module.named_parameters():
-                param.requires_grad = True
+        for adapter in Adapters:
+            if isinstance(sub_module, (adapter, nn.LayerNorm)):
+                for param_name, param in sub_module.named_parameters():
+                    param.requires_grad = True
     return GPT2_model
-
-def save_trainable_params(Model: nn.Module, Adapter: nn.Module, additional_param_list: list):
-    for name, sub_module in Model.named_modules():
-        if isinstance(sub_module, (Adapter, nn.LayerNorm)):
-            for param_name, param in sub_module.named_parameters():
-                param.requires_grad = True
 
 def switch_schedule(schedule, mult, switch):
     """ Apply LR multiplier before iteration "switch" """

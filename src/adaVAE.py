@@ -17,6 +17,7 @@ from src.adapters.vae import *
 from src.utils import *
 from src.adapters.common import AdapterConfig
 from data import ConditionalGenerationDataset
+import datetime
 
 from torch.utils.data import Dataset, DataLoader
 from apex.optimizers import FusedAdam
@@ -27,10 +28,9 @@ from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, AdamW, get_
 
 
 # devices = '0'
-os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+# os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 
 parser = argparse.ArgumentParser()
-parser.add_argument('experiment', type=str)
 
 # Default parameters are set based on single GPU training
 parser.add_argument('--lr', type=float, default=5e-5)
@@ -49,8 +49,8 @@ parser.add_argument('--adapter_size', type=int, default=256,
                     help="Hidden size of GPT2 encoder/decoder adapter")
 parser.add_argument('--latent_size', type=int, default=768,
                     help="Hidden size of latent code")
-parser.add_argument('--decoder_n_layer', type=int, default=6,
-                    help="attention layer number of GPT-2 decoder")
+parser.add_argument('--encoder_n_layer', type=int, default=6,
+                    help="attention layer number of GPT-2 encoder")
 parser.add_argument('--class_num', type=int, default=2,
                     help="class number for controllable generation")
 parser.add_argument('--label_emb_size', type=int, default=8,
@@ -60,6 +60,9 @@ parser.add_argument('--adapter_scalar', type=str, default="1.0",
 parser.add_argument('--ffn_option', type=str, default="parallel_ffn",
                     choices=['sequential', 'parallel_attn', 'parallel_ffn', 'pfeiffer'],
                     help="adapter type option")
+parser.add_argument('--attn_mode', type=str, default="prefix",
+                    choices=['prefix', 'adapter', 'lora', 'none'],
+                    help="attention transfer type")
 
 ## training paramters
 parser.add_argument('--batch-sizes', nargs='+', type=int, default=[1],
@@ -72,7 +75,7 @@ parser.add_argument('--switch-time', type=float, default=0,
                     help="Percentage of iterations to spend on short sequence training.")
 parser.add_argument('--data-dir', type=str, default='data')
 parser.add_argument('--out-dir', type=str, default='out')
-parser.add_argument('--adapter_init', type=str, default='other',
+parser.add_argument('--adapter_init', type=str, default='lora',
                     help="parameter initialization method for adapter layers.")
 parser.add_argument('--workers', default=2, type=int, metavar='N',
                     help='number of data loading workers')
@@ -85,7 +88,6 @@ parser.add_argument('--au_delta', type=float, default=0.01,
 parser.add_argument('--gpu', default=0, type=int)
 parser.add_argument('--no_gpu', action="store_true")
 
-parser.add_argument('--fp16', action='store_true', help="Train using FP16?")
 parser.add_argument('--fp16_opt_level', default='O1', type=str, required=False)
 
 # KL cost annealing, increase beta from beta_0 to 1 in beta_warmup steps
@@ -195,6 +197,7 @@ def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, label
     return loss.item(), ce_loss.mean().item(), reg_loss.item()
 
 def train(args):
+    now = datetime.datetime.now()
     # if args.model_type == 'cvae':
     #     args.learn_prior = True
     # else:
@@ -218,13 +221,19 @@ def train(args):
     if gpu: torch.cuda.manual_seed(args.seed); torch.cuda.manual_seed_all(args.seed)
 
     # logging
-    save_folder = os.path.join(args.out_dir, args.experiment)
+    experiment = f"{args.dataset}_as{args.adapter_size}_{fusion_type}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}_" \
+                 f"enc_layer-{args.encoder_n_layer}_zdim-{args.latent_size}_{now.month}.{now.day}.log"
+    save_folder = os.path.join(args.out_dir, experiment)
     os.makedirs(os.path.join(save_folder, 'ckpt/model'), exist_ok=True)
     os.makedirs(os.path.join(save_folder, 'ckpt/opt'), exist_ok=True)
     t_writer = SummaryWriter(os.path.join(save_folder, 'train'), flush_secs=5)
     v_writer = SummaryWriter(os.path.join(save_folder, 'val'), flush_secs=5)
     # importlib.reload(logging)
-    logging = Logger(os.path.join(save_folder, 'train.log'))
+    fusion_type = "add_attn" if args.add_attn else "add_input"
+    logging_file = f"{args.dataset}_init-{args.adapter_init}_ada-scalar{args.adapter_scalar}_as{args.adapter_size}_" \
+                   f"{fusion_type}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}" \
+                   f"beta{args.beta_0}_enc_layer-{args.encoder_n_layer}_zdim-{args.latent_size}_{now.month}.{now.day}.log"
+    logging = Logger(os.path.join(save_folder, logging_file))
     # logging.basicConfig(filename=os.path.join(save_folder, 'train.log'),
     #                     level=logging.INFO, format='%(asctime)s--- %(message)s', filemode='w')
     logging.info('\n*******************************************************************************\n')
@@ -281,10 +290,15 @@ def train(args):
                                label_emb_size=args.label_emb_size,
                                latent_size=args.latent_size,
                                class_num=args.class_num,
-                               n_layer=args.decoder_n_layer,
+                               n_layer=args.encoder_n_layer,
                                init=args.adapter_init,
                                adapter_scalar=args.adapter_scalar,
-                               ffn_option=args.ffn_option)
+                               ffn_option=args.ffn_option,
+                               attn_mode=args.attn_mode,
+                               attn_option='none',
+                               mid_dim=30,
+                               attn_bn=25,
+                               prefix_dropout=0.1)
     assert ada_config.ffn_option in ['sequential', 'parallel_attn', 'parallel_ffn', 'pfeiffer'], 'expect proper ffn_option'
     ## latent (z) size is n_embd = 768
     AdaVAE = AdaVAEModel(config, ada_config, add_input=args.add_input, add_attn=args.add_attn, add_softmax=args.add_softmax,
@@ -622,13 +636,20 @@ def train(args):
                     beta = min(1.0, beta + (1. - args.beta_0) / args.beta_warmup)
 
                 if not tuning_all and num_iters >= tuning_all_after_iters:
-                    AdaVAE.transformer = unfreeze_GPT2_adapters(AdaVAE.transformer, Cond_GPT2Adapter)
-                    AdaVAE.encoder = unfreeze_GPT2_adapters(AdaVAE.encoder, Cond_GPT2Adapter)
+                    decoder_unfreeze_modules = [Cond_GPT2Adapter]
+                    encoder_unfreeze_modules = [GPT2Adapter]
+                    if ada_config.attn_mode == "prefix":
+                        decoder_unfreeze_modules.append(Prefix)
+                        encoder_unfreeze_modules.append(Prefix)
+                    AdaVAE.transformer = unfreeze_GPT2_adapters(AdaVAE.transformer, decoder_unfreeze_modules)
+                    AdaVAE.encoder = unfreeze_GPT2_adapters(AdaVAE.encoder, encoder_unfreeze_modules)
                     for name, parameter in AdaVAE.named_parameters():
                         print((name, parameter.requires_grad))
-                    #     parameter.requires_grad = True
                     logging.info(f'AdaVAE params with gradients:{num_params(AdaVAE)}')
                     tuning_all = True
+
+                if args.warmup != -1:
+                    scheduler.step()
 
                 loss, ce_loss, reg_loss = train_step(device, AdaVAE, optimizer, x_ids, input_ids, attention_mask,
                                     label_onehot, loss_fn, beta, args.kl_rate, args.adv_loss, args.model_type)
@@ -651,8 +672,6 @@ def train(args):
                 st = time.time()
                 end = num_iters >= args.iterations
 
-                if args.warmup != -1:
-                    scheduler.step()
 
                 if end:
                     break
@@ -663,10 +682,10 @@ def train(args):
                     beta = args.beta_0
                     logging.info('KL annealing restart')
 
-                if num_iters % 1 == 0: #200 == 0:
+                if num_iters % 200 == 0:
                     val_step(test_loader)
 
-                if (num_iters + 1) % 1000 == 0:
+                if (num_iters + 1) % 2000 == 0:
                     logging.info('Saving model...')
                     logging.info("Iteration completed: %d, remained %d" % (num_iters, args.iterations - num_iters))
                     logging.info("Saving model...")
@@ -714,9 +733,9 @@ def train(args):
     logging.info("Training complete.")
 
 if __name__=="__main__":
-    # args = parser.parse_args()
+    args = parser.parse_args()
     # args = parser.parse_args('ex0116_as64_iter6k --batch-sizes 128 --max_length 25 --add_attn --label_cond --adapter_size 64 --latent_size 60 --decoder_n_layer 6'.split())
-    args = parser.parse_args('test --batch-sizes 128 --max_length 25 --add_attn --label_cond --adapter_size 64 --latent_size 60 --decoder_n_layer 6'.split())
+    # args = parser.parse_args('--batch-sizes 126 --max_length 25 --add_attn --label_cond --adapter_size 64 --latent_size 60 --decoder_n_layer 6'.split())
     train(args)
 
 # class AdaGPT2VAE(pl.LightningModule):

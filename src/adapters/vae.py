@@ -19,7 +19,7 @@ from transformers.modeling_gpt2 import ACT2FN, Attention, GPT2Model, Block, MLP,
 # from transformers.models.gpt2.modeling_gpt2 import ACT2FN, GPT2Attention, GPT2Model, GPT2Block, GPT2MLP, GPT2LMHeadModel
 from transformers.modeling_utils import PreTrainedModel, Conv1D, prune_conv1d_layer, SequenceSummary
 
-from adapters.common import AdapterConfig, init_lisa_params, init_bert_params, init_bias_mlp, init_zero_weights
+from src.adapters.common import AdapterConfig, init_lisa_params, init_bert_weights, init_bias_mlp, init_zero_weights, LoRALinear, Adapter_Layer, Prefix
 
 
 logging.basicConfig(level=logging.INFO)
@@ -73,7 +73,7 @@ class AverageSelfAttention(nn.Module):
 # Pseudo self-attention
 ## PSA for additive z infusion
 class Cond_Attention(Attention):
-    def __init__(self, nx, n_ctx, config, scale=False):
+    def __init__(self, nx, n_ctx, config, AdapterConfig, scale=False):
         super(Attention, self).__init__()
         # self.output_attentions = config.output_attentions
         self.output_attentions = False
@@ -160,44 +160,158 @@ class Cond_Attention(Attention):
         outputs = [a, present] + attn_outputs[1:]
         return outputs  # a, present, (attentions)
 
+class MAM_Cond_Attention(Attention):
+    """
+    parallel adapter with prefix-tuning and LoRA component
+    """
+    def __init__(self, nx, n_ctx, config, AdapterConfig, bias_bool=True, scale=False):
+        super(Attention, self).__init__()
+        # self.output_attentions = config.output_attentions
+        self.output_attentions = False
+
+        n_state = nx  # in Attention: n_state=768 (nx=n_embd)
+        # [switch nx => n_state from Block to Attention to keep identical to TF implem]
+        assert n_state % config.n_head == 0
+        self.register_buffer("bias", torch.tril(torch.ones(n_ctx, n_ctx)).view(1, 1, n_ctx, n_ctx))
+        self.n_head = config.n_head
+        self.split_size = n_state
+        self.scale = scale
+        self.config = config
+        self.attn_mode = AdapterConfig.attn_mode
+        self.attn_option = AdapterConfig.attn_option
+
+        # self.c_attn = Conv1D(n_state * 3, nx)
+        ## use linear layer (which is approximately equivelent to Conv1D) to parameterize q, k, v
+        if AdapterConfig.attn_mode == "lora": # not compatible yet
+            self.q_proj = LoRALinear(nx, n_state, r=config.attn_bn, lora_alpha=AdapterConfig.lora_alpha,
+                                 lora_dropout=config.lora_dropout)
+            self.v_proj = LoRALinear(nx, n_state, r=config.attn_bn, lora_alpha=AdapterConfig.lora_alpha,
+                                 lora_dropout=config.lora_dropout)
+        else:
+            self.c_attn = Conv1D(n_state * 3, nx)
+
+        self.c_proj = Conv1D(n_state, nx)
+        self.attn_dropout = nn.Dropout(config.attn_pdrop)
+        self.resid_dropout = nn.Dropout(config.resid_pdrop)
+        self.pruned_heads = set()
+
+        # add code here
+        self.c_z = Conv1D(n_state * 2, nx)
+
+        if 'prefix' in self.attn_mode:
+            if self.attn_option == 'cross_attn' or self.attn_option == 'cross_attn_relu':
+                self.ef_transform_layer_norm = nn.LayerNorm(config.hidden_size)
+
+        elif self.attn_mode == 'adapter':
+            self.ef_attn_adapter = GPT2Adapter(AdapterConfig)
+
+    def _attn(self, q, k, v, attention_mask=None, head_mask=None, output_attentions=False):
+        ## attention scores
+        w = torch.matmul(q, k)
+        if self.scale:
+            w = w / math.sqrt(v.size(-1))
+        nd, ns = w.size(-2), w.size(-1)
+        b = self.bias[:, :, ns - nd : ns, :ns]
+        w = w * b - 1e4 * (1 - b)
+
+        if attention_mask is not None:
+            # add code here: w size has been bsz * n_heads * L * (L+1), mask bsz * 1 * 1 * L
+            assert attention_mask.size()[-1] == w.size()[-1] - 1
+            zeros = torch.zeros(attention_mask.size()[:-1], device=attention_mask.device, dtype=attention_mask.dtype).unsqueeze(-1)
+            attention_mask = torch.cat((zeros, attention_mask), dim=-1)
+
+            # Apply the attention mask
+            w = w + attention_mask
+
+        w = nn.Softmax(dim=-1)(w)
+        w = self.attn_dropout(w)
+
+        # Mask heads if we want to
+        if head_mask is not None:
+            w = w * head_mask
+
+        outputs = [torch.matmul(w, v)]
+        if output_attentions:
+            outputs.append(w)
+        return outputs
+
+    def forward(self, x, z=None,
+                layer_past=None,
+                attention_mask=None,
+                head_mask=None,
+                encoder_hidden_states=None,
+                encoder_attention_mask=None,
+                use_cache=False,
+                output_attentions=False,
+                prefix_state=None,
+                ):
+        bsz = x.size(0)
+        x = self.c_attn(x)
+        query, key, value = x.split(self.split_size, dim=2)
+        query = self.split_heads(query)
+        key = self.split_heads(key, k=True)
+        value = self.split_heads(value)
+        if layer_past is not None:
+            past_key, past_value = layer_past[0].transpose(-2, -1), layer_past[1]  # transpose back cf below
+            key = torch.cat((past_key, key), dim=-1)
+            value = torch.cat((past_value, value), dim=-2)
+        present = torch.stack((key.transpose(-2, -1), value))  # transpose to have same shapes for stacking
+        if prefix_state is not None and "prefix" in self.attn_mode:
+            # legacy
+            prefix_key = prefix_state['prev_key']  # bsz x nhead, attn_bn, head_dim
+            prefix_value = prefix_state['prev_value']
+            prefix_mask = prefix_state['prev_key_padding_mask']  # bsz, attn_bn: zeros
+
+            # (bsz, nhead, attn_bn, head_im)
+            ## GPT2 key dim is different from BERT
+            prefix_key = prefix_key.view(bsz, self.config.n_head, *prefix_key.size()[-2:]).permute(0, 1, 3, 2)
+            prefix_value = prefix_value.view(bsz, self.config.n_head, *prefix_value.size()[-2:])
+
+            # import pdb; pdb.set_trace()
+            # original lisa prefix-tuning
+            # if self.cache_key == "self":
+            #     key_states = torch.cat([key_states[:, 0, :].unsqueeze(1), prefix_key, key_states[:, 1:, :]], dim=1)
+            #     value_states = torch.cat([value_states[:, 0, :].unsqueeze(1), prefix_value, value_states[:, 1:, :]], dim=1)
+            # else:
+            key = torch.cat([prefix_key, key], dim=3)
+            value = torch.cat([prefix_value, value], dim=2)
+
+            # import pdb; pdb.set_trace()
+            if attention_mask is not None:
+                # import pdb; pdb.set_trace()
+                expanded_prefix_mask = prefix_mask[:, None, None, :].expand(bsz, 1, attention_mask.size(2),
+                                                                            prefix_mask.size(1)).to(attention_mask.dtype)
+                attention_mask = torch.cat([expanded_prefix_mask, attention_mask], dim=-1)
+        elif self.attn_mode == "adapter":
+            pass
+
+        z_conv = self.c_z(z)
+        key_z, value_z = z_conv.split(self.split_size, dim=2)
+        key_z = self.split_heads(key_z, k=True)
+        value_z = self.split_heads(value_z)
+        key = torch.cat((key_z, key), dim=-1)
+        value = torch.cat((value_z, value), dim=-2)
+
+        attn_outputs = self._attn(query, key, value, attention_mask, head_mask, output_attentions)
+        a = attn_outputs[0]
+
+        a = self.merge_heads(a)
+        a = self.c_proj(a)
+        a = self.resid_dropout(a)
+
+        outputs = [a, present] + attn_outputs[1:]
+        return outputs  # a, present, (attentions)
+
 
 ## adapter block
 class GPT2Adapter(nn.Module):
     def __init__(self, AdapterConfig: AdapterConfig):
         super(GPT2Adapter, self).__init__()
         self.down_project = nn.Linear(AdapterConfig.hidden_size, AdapterConfig.adapter_size)
-        ## initialize down_project weight and bias
-        nn.init.normal_(self.down_project.weight, std=AdapterConfig.adapter_initializer_range)
-        nn.init.zeros_(self.down_project.bias)
-
-        if isinstance(AdapterConfig.adapter_act, str):
-            self.activation = ACT2FN[AdapterConfig.adapter_act]
-        else:
-            self.activation = AdapterConfig.adapter_act
-
         self.up_project = nn.Linear(AdapterConfig.adapter_size, AdapterConfig.hidden_size)
-        ## initialize up_project weight and bias
-        nn.init.normal_(self.up_project.weight, std=AdapterConfig.adapter_initializer_range)
-        nn.init.zeros_(self.up_project.bias)
-
-    def forward(self, hidden_states: torch.Tensor):
-        ## essentially a ''down mapping'' and an ''up mapping'' process
-        down_projected = self.down_project(hidden_states)
-        activated = self.activation(down_projected)
-        up_projected = self.up_project(activated)
-        return hidden_states + up_projected
-
-class Cond_GPT2Adapter(nn.Module):
-    """GPT2Adapter with label embedding infused during generation"""
-    def __init__(self, AdapterConfig: AdapterConfig):
-        super(Cond_GPT2Adapter, self).__init__()
-        self.down_project = nn.Linear(AdapterConfig.hidden_size, AdapterConfig.adapter_size)
-        self.up_project = nn.Linear(AdapterConfig.adapter_size + AdapterConfig.label_emb_size, AdapterConfig.hidden_size)
-        # self.infuser = nn.Linear(AdapterConfig.label_emb_size+AdapterConfig.hidden_size, AdapterConfig.hidden_size)
-        ## initialize up_project weight and bias
         ## initialize down_project weight and bias
         if AdapterConfig.init == "bert":
-            self.apply(init_bert_params)
+            self.apply(init_bert_weights)
         elif AdapterConfig.init == "lisa":
             self.apply(init_lisa_params)
         elif AdapterConfig.init == "lora":
@@ -212,20 +326,98 @@ class Cond_GPT2Adapter(nn.Module):
             nn.init.normal_(self.down_project.weight, std=AdapterConfig.adapter_initializer_range)
             nn.init.zeros_(self.down_project.bias)
 
+        if AdapterConfig.adapter_scalar=="learnable_scalar":
+            self.scale = nn.Parameter(torch.ones(1))
+        else:
+            self.scale = float(AdapterConfig.adapter_scalar)
+
         if isinstance(AdapterConfig.adapter_act, str):
             self.activation = ACT2FN[AdapterConfig.adapter_act]
         else:
             self.activation = AdapterConfig.adapter_act
 
 
-    def forward(self, hidden_states: torch.Tensor, label_embedding: torch.Tensor):
+    def forward(self, hidden_states: torch.Tensor, adapter_res:bool=True, residual: torch.Tensor=None, adapter_layernorm_option:str=None):
+        if adapter_layernorm_option == "in" or adapter_layernorm_option == "out":
+            self.adapter_layer_norm_before = nn.LayerNorm(hidden_states.size(-1))
+        if adapter_layernorm_option == 'in':
+            hidden_states = self.adapter_layer_norm_before(hidden_states)
+        ## essentially a ''down mapping'' and an ''up mapping'' process
+        down_projected = self.down_project(hidden_states)
+        activated = self.activation(down_projected)
+        up_projected = self.up_project(activated)
+        up_projected *= self.scale
+        if adapter_layernorm_option == 'out':
+            up_projected = self.adapter_layer_norm_before(up_projected)
+        if residual is not None:
+            up_projected += residual
+        if adapter_res:
+            out = hidden_states + up_projected
+        else:
+            out = up_projected
+        return out
+
+## Conditional GPT2 Adapter, support parallel or sequential adapter (LoRA/Adapter)
+class Cond_GPT2Adapter(nn.Module):
+    """GPT2Adapter with label embedding infused during generation"""
+    def __init__(self, AdapterConfig: AdapterConfig):
+        super(Cond_GPT2Adapter, self).__init__()
+        self.down_project = nn.Linear(AdapterConfig.hidden_size, AdapterConfig.adapter_size)
+        self.up_project = nn.Linear(AdapterConfig.adapter_size + AdapterConfig.label_emb_size, AdapterConfig.hidden_size)
+        # self.infuser = nn.Linear(AdapterConfig.label_emb_size+AdapterConfig.hidden_size, AdapterConfig.hidden_size)
+        ## initialize up_project weight and bias
+        ## initialize down_project weight and bias
+        if AdapterConfig.init == "bert":
+            self.apply(init_bert_weights)
+        elif AdapterConfig.init == "lisa":
+            self.apply(init_lisa_params)
+        elif AdapterConfig.init == "lora":
+            with torch.no_grad():
+                nn.init.kaiming_uniform_(self.down_project.weight, a=math.sqrt(5))
+                nn.init.zeros_(self.up_project.weight)
+                nn.init.zeros_(self.down_project.bias)
+                nn.init.zeros_(self.up_project.bias)
+        else:
+            nn.init.normal_(self.up_project.weight, std=AdapterConfig.adapter_initializer_range)
+            nn.init.zeros_(self.up_project.bias)
+            nn.init.normal_(self.down_project.weight, std=AdapterConfig.adapter_initializer_range)
+            nn.init.zeros_(self.down_project.bias)
+
+        if AdapterConfig.adapter_scalar=="learnable_scalar":
+            self.scale = nn.Parameter(torch.ones(1))
+        else:
+            self.scale = float(AdapterConfig.adapter_scalar)
+
+        if isinstance(AdapterConfig.adapter_act, str):
+            self.activation = ACT2FN[AdapterConfig.adapter_act]
+        else:
+            self.activation = AdapterConfig.adapter_act
+
+
+    def forward(self, hidden_states: torch.Tensor, label_embedding: torch.Tensor,
+                adapter_res:bool=True, residual: torch.Tensor=None, adapter_layernorm_option:str=None):
+        if adapter_layernorm_option == "in" or adapter_layernorm_option == "out":
+            self.adapter_layer_norm_before = nn.LayerNorm(hidden_states.size(-1))
         assert len(label_embedding.size()) == 3, f'label embedding should have dimension of 3'
+        if adapter_layernorm_option == 'in':
+            hidden_states = self.adapter_layer_norm_before(hidden_states)
         ## essentially a ''down mapping'' and an ''up mapping'' process
         down_projected = self.down_project(hidden_states)
         infused_projected = torch.cat([label_embedding, down_projected], -1)
         activated = self.activation(infused_projected)
         up_projected = self.up_project(activated)
-        return hidden_states + up_projected
+        up_projected *= self.scale
+
+        if adapter_layernorm_option == 'out':
+            up_projected = self.adapter_layer_norm_before(up_projected)
+
+        if residual is not None:
+            up_projected += residual
+        if adapter_res:
+            out = hidden_states + up_projected
+        else:
+            out = up_projected
+        return out
 
 """
 class BertAdaptedSelfOutput(nn.Module):
@@ -246,7 +438,8 @@ class BertAdaptedSelfOutput(nn.Module):
 """
 
 
-####################### auxiliary attention blocks #######################
+################################# Attention Blocks #########################################
+####################### auxiliary attention blocks w/o Adapter BEGIN #######################
 class Unmasked_Attention(Attention):
     """
     unmasked attention layer for encoder, re-define _atten function
@@ -272,6 +465,132 @@ class Unmasked_Attention(Attention):
             outputs.append(w)
         return outputs
 
+class MAM_Unmasked_Attention(Attention):
+    """
+    parallel adapter with prefix-tuning and LoRA component
+    """
+    def __init__(self, nx, n_ctx, config, AdapterConfig, scale=False):
+        super(Attention, self).__init__()
+        # self.output_attentions = config.output_attentions
+        self.output_attentions = False
+
+        n_state = nx  # in Attention: n_state=768 (nx=n_embd)
+        # [switch nx => n_state from Block to Attention to keep identical to TF implem]
+        assert n_state % config.n_head == 0
+        self.register_buffer("bias", torch.tril(torch.ones(n_ctx, n_ctx)).view(1, 1, n_ctx, n_ctx))
+        self.n_head = config.n_head
+        self.split_size = n_state
+        self.scale = scale
+        self.config = config
+        self.attn_mode = AdapterConfig.attn_mode
+        self.attn_option = AdapterConfig.attn_option
+
+        # self.c_attn = Conv1D(n_state * 3, nx)
+        ## use linear layer (which is approximately equivelent to Conv1D) to parameterize q, k, v
+        if AdapterConfig.attn_mode == "lora":
+            self.q_proj = LoRALinear(nx, n_state, r=config.attn_bn, lora_alpha=AdapterConfig.lora_alpha,
+                                 lora_dropout=config.lora_dropout)
+            self.v_proj = LoRALinear(nx, n_state, r=config.attn_bn, lora_alpha=AdapterConfig.lora_alpha,
+                                 lora_dropout=config.lora_dropout)
+        else:
+            self.c_attn = Conv1D(n_state * 3, nx)
+        self.c_proj = Conv1D(n_state, nx)
+        self.attn_dropout = nn.Dropout(config.attn_pdrop)
+        self.resid_dropout = nn.Dropout(config.resid_pdrop)
+        self.pruned_heads = set()
+
+        if 'prefix' in self.attn_mode:
+            if self.attn_option == 'cross_attn' or self.attn_option == 'cross_attn_relu':
+                self.ef_transform_layer_norm = nn.LayerNorm(config.hidden_size)
+
+        elif self.attn_mode == 'adapter':
+            self.ef_attn_adapter = GPT2Adapter(AdapterConfig)
+
+        elif self.attn_mode != 'none':
+            raise ValueError("att_mode not supported")
+
+    def _attn(self, q, k, v, attention_mask=None, head_mask=None, output_attentions=False):
+        """
+        unmasked attention layer for encoder, re-define _atten function
+        """
+        w = torch.matmul(q, k)
+        if self.scale:
+            w = w / math.sqrt(v.size(-1))
+
+        if attention_mask is not None:
+            # Apply the attention mask
+            w = w + attention_mask
+
+        w = nn.Softmax(dim=-1)(w)
+        w = self.attn_dropout(w)
+
+        # Mask heads if we want to
+        if head_mask is not None:
+            w = w * head_mask
+
+        outputs = [torch.matmul(w, v)]
+        if output_attentions:
+            outputs.append(w)
+        return outputs
+
+    def forward(self, x, z=None,
+                layer_past=None,
+                attention_mask=None,
+                head_mask=None,
+                encoder_hidden_states=None,
+                encoder_attention_mask=None,
+                use_cache=False,
+                output_attentions=False,
+                prefix_state=None,
+                ):
+        bsz = x.size(0)
+        x = self.c_attn(x)
+        query, key, value = x.split(self.split_size, dim=2)
+        query = self.split_heads(query)
+        key = self.split_heads(key, k=True)
+        value = self.split_heads(value)
+        if layer_past is not None:
+            past_key, past_value = layer_past[0].transpose(-2, -1), layer_past[1]  # transpose back cf below
+            key = torch.cat((past_key, key), dim=-1)
+            value = torch.cat((past_value, value), dim=-2)
+        present = torch.stack((key.transpose(-2, -1), value))  # transpose to have same shapes for stacking
+
+        if prefix_state is not None and "prefix" in self.attn_mode:
+            # legacy
+            prefix_key = prefix_state['prev_key']  # bsz x nhead, attn_bn, head_dim
+            prefix_value = prefix_state['prev_value']
+            prefix_mask = prefix_state['prev_key_padding_mask']  # bsz, attn_bn: zeros
+
+            # (bsz, nhead, attn_bn, head_im)
+            prefix_key = prefix_key.view(bsz, self.config.n_head, *prefix_key.size()[-2:]).permute(0, 1, 3, 2)
+            prefix_value = prefix_value.view(bsz, self.config.n_head, *prefix_value.size()[-2:])
+
+            # import pdb; pdb.set_trace()
+            # original lisa prefix-tuning
+            # if self.cache_key == "self":
+            #     key_states = torch.cat([key_states[:, 0, :].unsqueeze(1), prefix_key, key_states[:, 1:, :]], dim=1)
+            #     value_states = torch.cat([value_states[:, 0, :].unsqueeze(1), prefix_value, value_states[:, 1:, :]], dim=1)
+            # else:
+            key = torch.cat([prefix_key, key], dim=3)
+            value = torch.cat([prefix_value, value], dim=2)
+
+            # import pdb; pdb.set_trace()
+            if attention_mask is not None:
+                # import pdb; pdb.set_trace()
+                expanded_prefix_mask = prefix_mask[:, None, None, :].expand(bsz, 1, attention_mask.size(2),
+                                                                            prefix_mask.size(1)).to(attention_mask.dtype)
+                attention_mask = torch.cat([expanded_prefix_mask, attention_mask], dim=-1)
+
+        attn_outputs = self._attn(query, key, value, attention_mask, head_mask, output_attentions)
+        a = attn_outputs[0]
+
+        a = self.merge_heads(a)
+        a = self.c_proj(a)
+        a = self.resid_dropout(a)
+
+        outputs = [a, present] + attn_outputs[1:]
+        return outputs  # a, present, (attentions)
+
 class Unmasked_Block(Block):
     """
     base block of Encoder, unmasked/bi-directional structure in the encoder
@@ -292,7 +611,7 @@ class Cond_Block(Block):
         super(Block, self).__init__()
         nx = config.n_embd
         self.ln_1 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
-        self.attn = Cond_Attention(nx, n_ctx, config, scale)
+        self.attn = Cond_Attention(nx, n_ctx, config, AdapterConfig, scale)
         self.ln_2 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
         self.mlp = MLP(4 * nx, config)
 
@@ -308,7 +627,9 @@ class Cond_Block(Block):
 
         outputs = [x] + output_attn[1:]
         return outputs  # x, present, (attentions)
+####################### auxiliary attention blocks w/o Adapter END #######################
 
+####################### auxiliary attention blocks w/ Adapter BEGIN ######################
 class Unmasked_AdapterBlock(Block):
     """
     base block of Encoder, unmasked/bi-directional structure in the encoder
@@ -319,27 +640,36 @@ class Unmasked_AdapterBlock(Block):
         super(Block, self).__init__()
         nx = config.n_embd
         self.ln_1 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
-        self.attn = Unmasked_Attention(nx, n_ctx, config, scale)
+        # self.attn = Unmasked_Attention(nx, n_ctx, config, scale)
+        self.attn = MAM_Unmasked_Attention(nx, n_ctx, config, AdapterConfig, scale=scale)
         self.ln_2 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
+        if AdapterConfig.ffn_option == "pfeiffer":
+            self.ln_3 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
         if config.add_cross_attention:
             self.crossattention = Attention(nx, n_ctx, config, scale, is_cross_attention=True)
             self.ln_cross_attn = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
         self.mlp = MLP(4 * nx, config)
+        self.Adaconfig = AdapterConfig
         self.adapter = GPT2Adapter(AdapterConfig)
 
     def forward(
             self, x, layer_past=None, attention_mask=None, head_mask=None, encoder_hidden_states=None,
-                encoder_attention_mask=None, use_cache=False, output_attentions=False
+                encoder_attention_mask=None, use_cache=False, output_attentions=False, prefix_state=None,
     ):
         output_attn = self.attn(self.ln_1(x),
                                 layer_past=layer_past,
                                 attention_mask=attention_mask,
                                 head_mask=head_mask,
                                 use_cache=use_cache,
-                                output_attentions=output_attentions,)
+                                output_attentions=output_attentions,
+                                prefix_state=None,)
         a = output_attn[0]  # output_attn: a, present, (attentions)
         outputs = output_attn[1:]
 
+        if self.Adaconfig.ffn_option == "sequential":
+            x = self.adapter(x)
+
+        ## residual connection: intermidia layer, intermediate
         x = x + a
         if encoder_hidden_states is not None:
             # add one self-attention block for cross-attention
@@ -357,11 +687,21 @@ class Unmasked_AdapterBlock(Block):
             attn_output = cross_attn_outputs[0]
             # residual connection
             x = x + attn_output
+            a = a + attn_output
             outputs = outputs + cross_attn_outputs[1:]  # add cross attentions if we output attention weights
-        # todo: where to add adapter
-        x = self.adapter(x)
+
+        ## hidden states
         m = self.mlp(self.ln_2(x))
+        if self.Adaconfig.ffn_option == "parallel_attn":
+            a = self.adapter(a, False)
+            x = x + a
+        elif self.Adaconfig.ffn_option == "parallel_ffn":
+            x = self.adapter(x)
+        elif self.Adaconfig.ffn_option == "sequential":
+            m = self.adapter(m) ## a = a + adapter_change(a)
         x = x + m
+        if self.Adaconfig.ffn_option == "pfeiffer":
+            x = self.ln_3(self.adapter(x, adapter_res=False, residual=m, adapter_layernorm_option="in") + a)
 
         outputs = [x] + outputs
         return outputs  # x, present, (attentions)
@@ -372,21 +712,22 @@ class Cond_AdapterBlock(Block):
     to infuse latent variable z to attention layers
     adapter-tuning essentially add down/up projection to the output
     """
-    def __init__(self, n_ctx, config, AdapterConfig, cond_adapter=False, scale=False):
+    def __init__(self, n_ctx, config, AdapterConfig, scale=False):
         super(Block, self).__init__()
         nx = config.n_embd
         self.ln_1 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
-        self.attn = Cond_Attention(nx, n_ctx, config, scale)
+        # self.attn = Cond_Attention(nx, n_ctx, config, AdapterConfig, scale)
+        self.attn = MAM_Cond_Attention(nx, n_ctx, config, AdapterConfig, scale=scale)
         self.ln_2 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
+        if AdapterConfig.ffn_option == "pfeiffer":
+            self.ln_3 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
         if config.add_cross_attention:
             self.crossattention = Attention(nx, n_ctx, config, scale, is_cross_attention=True)
             self.ln_cross_attn = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
         self.mlp = MLP(4 * nx, config)
-        self.cond_adapter = cond_adapter
-        if cond_adapter:
-            self.adapter = Cond_GPT2Adapter(AdapterConfig)
-        else:
-            self.adapter = GPT2Adapter(AdapterConfig)
+        self.Adaconfig = AdapterConfig
+        self.adapter = Cond_GPT2Adapter(AdapterConfig)
+
 
     def forward(self, x, z,
                 label_emb=None,
@@ -396,7 +737,9 @@ class Cond_AdapterBlock(Block):
                 encoder_hidden_states=None,
                 encoder_attention_mask=None,
                 use_cache=False,
-                output_attentions=False,):
+                output_attentions=False,
+                prefix_state=None,):
+        assert (label_emb is not None), 'get none label embedding'
         output_attn = self.attn(
             self.ln_1(x), z,
                 layer_past=layer_past,
@@ -404,11 +747,15 @@ class Cond_AdapterBlock(Block):
                 head_mask=head_mask,
                 use_cache=use_cache,
                 output_attentions=output_attentions,
+                prefix_state=prefix_state,
         )
         ## [bs, max_len, hidden size]
         a = output_attn[0]  # output_attn: a, present, (attentions)
         outputs = output_attn[1:]
 
+        if self.Adaconfig.ffn_option == "sequential":
+            label_emb = label_emb.unsqueeze(1).repeat(1, x.size(1), 1)
+            x = self.adapter(x, label_emb)
         ## residual connection
         x = x + a
         if encoder_hidden_states is not None:
@@ -428,17 +775,27 @@ class Cond_AdapterBlock(Block):
             # residual connection
             x = x + attn_output
             outputs = outputs + cross_attn_outputs[1:]  # add cross attentions if we output attention weights
-        if self.cond_adapter:
-            assert (label_emb is not None), 'get none label embedding'
+
+        ## hidden states
+        m = self.mlp(self.ln_2(x))
+        if self.Adaconfig.ffn_option == "parallel_attn":
+            label_emb = label_emb.unsqueeze(1).repeat(1, a.size(1), 1)
+            a = self.adapter(a, label_emb, False)
+            x = x + a
+        elif self.Adaconfig.ffn_option == "parallel_ffn":
             label_emb = label_emb.unsqueeze(1).repeat(1, x.size(1), 1)
             x = self.adapter(x, label_emb)
-        else:
-            x = self.adapter(x)
-        m = self.mlp(self.ln_2(x))
+        elif self.Adaconfig.ffn_option == "sequential":
+            label_emb = label_emb.unsqueeze(1).repeat(1, m.size(1), 1)
+            m = self.adapter(m, label_emb)  ## a = a + adapter_change(a)
         x = x + m
-
+        if self.Adaconfig.ffn_option == "pfeiffer":
+            label_emb = label_emb.unsqueeze(1).repeat(1, x.size(1), 1)
+            self.ln_3(self.adapter(x, label_emb, adapter_res=False, residual=m, adapter_layernorm_option="in") + a)
         outputs = [x] + outputs
         return outputs  # x, present, (attentions)
+####################### auxiliary attention blocks w/ Adapter END ########################
+
 
 ####################### transformer-based vae #######################
 class Encoder(GPT2Model):
@@ -456,6 +813,7 @@ class Encoder(GPT2Model):
         ## wpe is word position embedding
         self.wpe = nn.Embedding(config.n_positions, config.n_embd)
         self.drop = nn.Dropout(config.embd_pdrop)
+        self.attn_mode = AdapterConfig.attn_mode
 
         # manually modify number of layers in encoder to accommodate GPU memory
         n = AdapterConfig.n_layer
@@ -473,6 +831,8 @@ class Encoder(GPT2Model):
         nz = AdapterConfig.latent_size
         self.mean = Conv1D(nz, nx)
         self.logvar = Conv1D(nz, nx)
+        if self.attn_mode == "prefix":
+            self.prompt_model = Prefix(AdapterConfig, config)
 
     def forward(
             self,
@@ -482,8 +842,11 @@ class Encoder(GPT2Model):
             token_type_ids=None,
             position_ids=None,
             head_mask=None,
-            inputs_embeds=None
+            inputs_embeds=None,
     ):
+        prefix_state = None
+        if self.attn_mode == "prefix":
+            prefix_state = self.prompt_model(input_ids.size(0), device=input_ids.device)
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
         elif input_ids is not None:
@@ -566,7 +929,8 @@ class Encoder(GPT2Model):
                 all_hidden_states = all_hidden_states + (hidden_states.view(*output_shape),)
 
             outputs = block(
-                hidden_states, layer_past=layer_past, attention_mask=attention_mask, head_mask=head_mask[i]
+                hidden_states, layer_past=layer_past, attention_mask=attention_mask,
+                head_mask=head_mask[i], prefix_state=prefix_state[i] if isinstance(prefix_state, list) else prefix_state
             )
 
             hidden_states, present = outputs[:2]
@@ -604,7 +968,7 @@ class Encoder(GPT2Model):
 
 
 class Decoder(GPT2Model):
-    def __init__(self, config, AdapterConfig, add_input=False, add_attn=False, attn_proj_vary=False, label_cond=False):
+    def __init__(self, config, AdapterConfig, add_input=False, add_attn=False, attn_proj_vary=False, label_cond=True):
         """
 
         :param config:
@@ -631,6 +995,7 @@ class Decoder(GPT2Model):
         self.wte = nn.Embedding(config.vocab_size, config.n_embd)
         self.wpe = nn.Embedding(config.n_positions, config.n_embd)
         self.drop = nn.Dropout(config.embd_pdrop)
+        self.attn_mode = AdapterConfig.attn_mode
 
         ## choose different conditional generation methods (word embedding/attention bolck/softmax decoding)
         if self.add_input:
@@ -651,7 +1016,7 @@ class Decoder(GPT2Model):
                 self.attn_proj = nn.Linear(nz + nl, nx, bias=False)
 
             self.h = nn.ModuleList([Cond_AdapterBlock(config.n_ctx, config, AdapterConfig,
-                                                      cond_adapter=label_cond, scale=True) for _ in range(config.n_layer)])
+                                                      scale=True) for _ in range(config.n_layer)])
             ## Fine-tuing decoder block
             # self.h = nn.ModuleList([Cond_Block(config.n_ctx, config, scale=True) for _ in range(config.n_layer)])
         else:
@@ -659,6 +1024,9 @@ class Decoder(GPT2Model):
         self.ln_f = nn.LayerNorm(config.n_embd, eps=config.layer_norm_epsilon)
 
         self.init_weights()
+
+        if self.attn_mode == "prefix":
+            self.prompt_model = Prefix(AdapterConfig, config)
 
     def forward(
             self,
@@ -670,8 +1038,11 @@ class Decoder(GPT2Model):
             head_mask=None,
             inputs_embeds=None,
             representations=None,
-            label_emb = None
+            label_emb = None,
     ):
+        prefix_state = None
+        if self.attn_mode == "prefix":
+            prefix_state = self.prompt_model(input_ids.size(0), device=input_ids.device)
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
         elif input_ids is not None:
@@ -781,7 +1152,7 @@ class Decoder(GPT2Model):
                 if self.label_cond:
                     outputs = block(
                         hidden_states, z, label_emb=label_emb, layer_past=layer_past, attention_mask=attention_mask,
-                        head_mask=head_mask[i]
+                        head_mask=head_mask[i], prefix_state=prefix_state[i] if isinstance(prefix_state, list) else prefix_state
                     )
                 else:
                     outputs = block(
@@ -1010,7 +1381,7 @@ class AdaVAEModel(GPT2LMHeadModel):
         inputs_embeds=None,
         label_onehot=None,
         from_prior=False,
-        from_mean=False
+        from_mean=False,
     ):
         # latent representation
         ## mean, logvar, last hidden state, (presents), (all hidden_states), (attentions)

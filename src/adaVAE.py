@@ -13,9 +13,9 @@ from logger import Logger
 from tensorboardX import SummaryWriter
 from tqdm import tqdm
 import torch.nn.functional as F
-from src.adapters.vae import *
-from src.utils import *
-from src.adapters.common import AdapterConfig
+from adapters.vae import *
+from utils import *
+from adapters.common import AdapterConfig
 from data import ConditionalGenerationDataset
 import datetime
 
@@ -51,6 +51,8 @@ parser.add_argument('--latent_size', type=int, default=768,
                     help="Hidden size of latent code")
 parser.add_argument('--encoder_n_layer', type=int, default=6,
                     help="attention layer number of GPT-2 encoder")
+parser.add_argument('--decoder_n_layer', type=int, default=12,
+                    help="attention layer number of GPT-2 decoder")
 parser.add_argument('--class_num', type=int, default=2,
                     help="class number for controllable generation")
 parser.add_argument('--label_emb_size', type=int, default=8,
@@ -76,6 +78,7 @@ parser.add_argument('--switch-time', type=float, default=0,
 parser.add_argument('--data-dir', type=str, default='data')
 parser.add_argument('--out-dir', type=str, default='out')
 parser.add_argument('--adapter_init', type=str, default='lora',
+                    choices=['lora', 'bert', 'lisa', 'other'],
                     help="parameter initialization method for adapter layers.")
 parser.add_argument('--workers', default=2, type=int, metavar='N',
                     help='number of data loading workers')
@@ -188,7 +191,7 @@ def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, label
                                           beta, kl_rate, use_adv_loss)
     with amp.scale_loss(loss, optimizer) as scaled_loss:
         scaled_loss.backward()
-        torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), 5.0)  # max_grad_norm=1.0
+        torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), 1.0)  # max_grad_norm=1.0
     # loss.backward()
     # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # max_grad_norm=1.0
     optimizer.step()
@@ -220,19 +223,21 @@ def train(args):
     torch.random.manual_seed(args.seed)
     if gpu: torch.cuda.manual_seed(args.seed); torch.cuda.manual_seed_all(args.seed)
 
+    fusion_type = "add_attn" if args.add_attn else "add_input"
     # logging
-    experiment = f"{args.dataset}_as{args.adapter_size}_{fusion_type}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}_" \
-                 f"enc_layer-{args.encoder_n_layer}_zdim-{args.latent_size}_{now.month}.{now.day}.log"
+    experiment = f"{args.dataset}_as{args.adapter_size}_{fusion_type}_attn_mode-{args.attn_mode}_" \
+                 f"ffn_option-{args.ffn_option}_enc_layer-{args.encoder_n_layer}_" \
+                 f"dec_layer-{args.decoder_n_layer}_zdim-{args.latent_size}_zrate-{args.kl_rate}_{now.month}.{now.day}"
     save_folder = os.path.join(args.out_dir, experiment)
     os.makedirs(os.path.join(save_folder, 'ckpt/model'), exist_ok=True)
     os.makedirs(os.path.join(save_folder, 'ckpt/opt'), exist_ok=True)
     t_writer = SummaryWriter(os.path.join(save_folder, 'train'), flush_secs=5)
     v_writer = SummaryWriter(os.path.join(save_folder, 'val'), flush_secs=5)
     # importlib.reload(logging)
-    fusion_type = "add_attn" if args.add_attn else "add_input"
     logging_file = f"{args.dataset}_init-{args.adapter_init}_ada-scalar{args.adapter_scalar}_as{args.adapter_size}_" \
                    f"{fusion_type}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}" \
-                   f"beta{args.beta_0}_enc_layer-{args.encoder_n_layer}_zdim-{args.latent_size}_{now.month}.{now.day}.log"
+                   f"beta{args.beta_0}_enc_layer-{args.encoder_n_layer}_dec_layer-{args.decoder_n_layer}_" \
+                   f"zdim-{args.latent_size}_zrate-{args.kl_rate}_{now.month}.{now.day}.log"
     logging = Logger(os.path.join(save_folder, logging_file))
     # logging.basicConfig(filename=os.path.join(save_folder, 'train.log'),
     #                     level=logging.INFO, format='%(asctime)s--- %(message)s', filemode='w')
@@ -290,7 +295,8 @@ def train(args):
                                label_emb_size=args.label_emb_size,
                                latent_size=args.latent_size,
                                class_num=args.class_num,
-                               n_layer=args.encoder_n_layer,
+                               encoder_n_layer=args.encoder_n_layer,
+                               decoder_n_layer=args.decoder_n_layer,
                                init=args.adapter_init,
                                adapter_scalar=args.adapter_scalar,
                                ffn_option=args.ffn_option,
@@ -585,8 +591,8 @@ def train(args):
         v_writer.add_scalar('ppl_bpe', ppl_bpe, num_iters)
         v_writer.add_scalar('ppl_word', ppl_word, num_iters)
         v_writer.add_scalar('reg_loss', reg, num_iters)
-        v_writer.add_scalar('mutual information', mi, num_iters)
-        v_writer.add_scalar('activagte unit', n_au, num_iters)
+        v_writer.add_scalar('mutual_information', mi, num_iters)
+        v_writer.add_scalar('activagte_unit', n_au, num_iters)
         logging.info('val loss    : %.4f' % loss_bpe)
         logging.info('val ppl_bpe : %.4f' % ppl_bpe)
         logging.info('val ppl_word: %.4f' % ppl_word)
@@ -682,10 +688,10 @@ def train(args):
                     beta = args.beta_0
                     logging.info('KL annealing restart')
 
-                if num_iters % 200 == 0:
+                if num_iters % 500 == 0:
                     val_step(test_loader)
 
-                if (num_iters + 1) % 2000 == 0:
+                if (num_iters + 1) % 5000 == 0:
                     logging.info('Saving model...')
                     logging.info("Iteration completed: %d, remained %d" % (num_iters, args.iterations - num_iters))
                     logging.info("Saving model...")
@@ -737,114 +743,3 @@ if __name__=="__main__":
     # args = parser.parse_args('ex0116_as64_iter6k --batch-sizes 128 --max_length 25 --add_attn --label_cond --adapter_size 64 --latent_size 60 --decoder_n_layer 6'.split())
     # args = parser.parse_args('--batch-sizes 126 --max_length 25 --add_attn --label_cond --adapter_size 64 --latent_size 60 --decoder_n_layer 6'.split())
     train(args)
-
-# class AdaGPT2VAE(pl.LightningModule):
-#     """
-#     This class is used to fine-tune a pre-trained model from Transformers using PyTorch-Lightning.
-#     It is optimized towards models with SentencePiece tokenizers to be converted into LibTorch + SentencePiece
-#     for C++ deployments.
-#
-#     :arg model_name: str, pre-trained model name for a model from Transformers
-#     :arg n_classes: int, number of classes in the classification problem
-#     :arg max_length: int, maximum length of tokens that the model uses
-#     :arg lr: float, learning rate for fine-tuning
-#     :arg eps: float, epsilon parameter for Adam optimizer
-#     """
-#     def __init__(self,
-#                  model_name: str,
-#                  n_classes: int,
-#                  max_length: int = 100,
-#                  lr: float = 2e-05,
-#                  eps: float = 1e-08):
-#         super(AdaGPT2VAE, self).__init__()
-#         self.max_length = max_length
-#         self.lr = lr
-#         self.eps = eps
-#
-#         config = GPT2Config.from_pretrained(model_name,
-#                                             num_labels=n_classes,
-#                                             output_attentions=False,
-#                                             output_hidden_states=False,
-#                                             torchscript=True)
-#         self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2', use_fast=False)
-#         self.model = AdaVAEModel(config)
-#         self.criteria = nn.CrossEntropyLoss()
-#         gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2')
-#         print('gpt2_params:', num_params(gpt2_model))  # gpt2: 124439808
-#         config = GPT2Config()
-#         init_para_frompretrained(self.model.transformer, gpt2_model.transformer, share_para=True)
-#         init_para_frompretrained(self.model.encoder, gpt2_model.transformer, share_para=False)
-#
-#     def forward(self, x_ids, x_mask, input_ids, attention_mask=None, label_emb=None):
-#         output = self.model(
-#         x_mask=x_mask,
-#         x_tokens=x_ids,
-#         input_ids=input_ids,
-#         attention_mask=attention_mask,
-#         label_emb=label_emb
-#         )
-#         ## lm_logits, presents, (all hidden_states), (attentions), (regularization_loss)
-#         return output
-#
-#     def tokenize(self, texts):
-#         x_tokenized = self.tokenizer(texts, padding=True,
-#                                      truncation=True, return_tensors='pt')
-#         input_ids = x_tokenized['input_ids'].to(self.device)
-#         attention_mask = x_tokenized['attention_mask'].to(self.device)
-#         x_ids = x_tokenized['input_ids'][:, 1:].to(self.device)
-#         x_mask = x_tokenized['attention_mask'][:, 1:].to(self.device)
-#         return x_ids, x_mask, input_ids, attention_mask
-#
-#     def compute(self, batch, cn: int):
-#         """
-#
-#         :param batch:
-#         :param cn: class number
-#         :return:
-#         """
-#         x = batch['x']
-#         y = batch['y']
-#         y = F.one_hot(y, cn)
-#
-#         x_ids, x_mask, input_ids, attention_mask = self.tokenize(x)
-#         output = self(x_ids, x_mask, input_ids, attention_mask, y)
-#         lm_logits = output[0]
-#         regularization_loss = output[-1]
-#         return lm_logits, regularization_loss
-#
-#     def training_step(self, batch, batch_nb):
-#         loss, logits = self.compute(batch)
-#         return {'loss': loss}
-#
-#     def validation_step(self, batch, batch_nb):
-#         loss, logits = self.compute(batch)
-#
-#         y = batch['y']
-#         a, y_hat = torch.max(logits, dim=1)
-#
-#         return {'val_loss': loss, 'val_acc': torch.tensor(val_acc)}
-#
-#     def validation_epoch_end(self, outputs):
-#         avg_loss = torch.stack([x['val_loss'] for x in outputs]).mean()
-#         avg_val_acc = torch.stack([x['val_acc'] for x in outputs]).mean()
-#
-#         self.log('val_loss', avg_loss, on_epoch=True, prog_bar=True, sync_dist=True)
-#         self.log('avg_val_acc', avg_val_acc, on_epoch=True, prog_bar=True, sync_dist=True)
-#
-#     def test_step(self, batch, batch_nb):
-#         loss, logits = self.compute(batch)
-#
-#         y = batch['y']
-#         a, y_hat = torch.max(logits, dim=1)
-#         test_acc = accuracy_score(y_hat.cpu(), y.cpu())
-#
-#         return {'test_acc': torch.tensor(test_acc)}
-#
-#     def test_epoch_end(self, outputs):
-#         avg_test_acc = torch.stack([x['test_acc'] for x in outputs]).mean()
-#
-#         self.log('avg_test_acc', avg_test_acc, on_epoch=True, prog_bar=True, sync_dist=True)
-#
-#     def configure_optimizers(self):
-#         return torch.optim.Adam([p for p in self.parameters() if p.requires_grad],
-#                                 lr=self.lr, eps=self.eps)

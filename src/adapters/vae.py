@@ -19,7 +19,7 @@ from transformers.modeling_gpt2 import ACT2FN, Attention, GPT2Model, Block, MLP,
 # from transformers.models.gpt2.modeling_gpt2 import ACT2FN, GPT2Attention, GPT2Model, GPT2Block, GPT2MLP, GPT2LMHeadModel
 from transformers.modeling_utils import PreTrainedModel, Conv1D, prune_conv1d_layer, SequenceSummary
 
-from src.adapters.common import AdapterConfig, init_lisa_params, init_bert_weights, init_bias_mlp, init_zero_weights, LoRALinear, Adapter_Layer, Prefix
+from adapters.common import AdapterConfig, init_lisa_params, init_bert_weights, init_bias_mlp, init_zero_weights, LoRALinear, Adapter_Layer, Prefix
 
 
 logging.basicConfig(level=logging.INFO)
@@ -816,7 +816,7 @@ class Encoder(GPT2Model):
         self.attn_mode = AdapterConfig.attn_mode
 
         # manually modify number of layers in encoder to accommodate GPU memory
-        n = AdapterConfig.n_layer
+        n = AdapterConfig.encoder_n_layer
         self.h = nn.ModuleList([Unmasked_AdapterBlock(config.n_ctx, config, AdapterConfig, scale=True) for _ in range(n)])
         ## Fine-tuning encoder block
         # self.h = nn.ModuleList([Unmasked_Block(config.n_ctx, config, scale=True) for _ in range(n)])
@@ -1007,20 +1007,20 @@ class Decoder(GPT2Model):
         if self.add_attn:
             nz = AdapterConfig.latent_size
             nx = config.n_embd
-            n = config.n_layer
+            n = AdapterConfig.decoder_n_layer
             nl = AdapterConfig.label_emb_size
 
             if self.attn_proj_vary:
                 self.attn_proj = nn.Linear(nz + nl, nx * n, bias=False)
             else:
                 self.attn_proj = nn.Linear(nz + nl, nx, bias=False)
-
             self.h = nn.ModuleList([Cond_AdapterBlock(config.n_ctx, config, AdapterConfig,
-                                                      scale=True) for _ in range(config.n_layer)])
+                                                      scale=True) for _ in range(n)])
             ## Fine-tuing decoder block
             # self.h = nn.ModuleList([Cond_Block(config.n_ctx, config, scale=True) for _ in range(config.n_layer)])
         else:
-            self.h = nn.ModuleList([Block(config.n_ctx, config, scale=True) for _ in range(config.n_layer)])
+            n = AdapterConfig.decoder_n_layer
+            self.h = nn.ModuleList([Block(config.n_ctx, config, scale=True) for _ in range(n)])
         self.ln_f = nn.LayerNorm(config.n_embd, eps=config.layer_norm_epsilon)
 
         self.init_weights()

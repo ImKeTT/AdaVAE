@@ -15,7 +15,8 @@ class AdapterConfig(NamedTuple):
     label_emb_size: int
     latent_size: int
     class_num: int
-    n_layer: int
+    encoder_n_layer: int
+    decoder_n_layer: int
     init: str
     adapter_scalar: str
     ffn_option: str # sequential / parallel_attn / parallel_ffn / pfeiffer

@@ -225,7 +225,8 @@ def train(args):
 
     fusion_type = "add_attn" if args.add_attn else "add_input"
     # logging
-    experiment = f"{args.dataset}_as{args.adapter_size}_{fusion_type}_attn_mode-{args.attn_mode}_" \
+    experiment = f"{args.dataset}_iter{args.iterations}_as{args.adapter_size}_scalar{args.adapter_scalar}" \
+                 f"_{fusion_type}_beta{args.beta_0}_attn_mode-{args.attn_mode}_" \
                  f"ffn_option-{args.ffn_option}_enc_layer-{args.encoder_n_layer}_" \
                  f"dec_layer-{args.decoder_n_layer}_zdim-{args.latent_size}_zrate-{args.kl_rate}_{now.month}.{now.day}"
     save_folder = os.path.join(args.out_dir, experiment)
@@ -235,7 +236,7 @@ def train(args):
     v_writer = SummaryWriter(os.path.join(save_folder, 'val'), flush_secs=5)
     # importlib.reload(logging)
     logging_file = f"{args.dataset}_init-{args.adapter_init}_ada-scalar{args.adapter_scalar}_as{args.adapter_size}_" \
-                   f"{fusion_type}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}" \
+                   f"{fusion_type}_beta{args.beta_0}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}" \
                    f"beta{args.beta_0}_enc_layer-{args.encoder_n_layer}_dec_layer-{args.decoder_n_layer}_" \
                    f"zdim-{args.latent_size}_zrate-{args.kl_rate}_{now.month}.{now.day}.log"
     logging = Logger(os.path.join(save_folder, logging_file))
@@ -324,7 +325,8 @@ def train(args):
     if AdaVAE.add_softmax:
         AdaVAE.lm_head_rep = Conv1D(*gpt2_model.lm_head.weight.size())
         # AdaVAE.lm_head_rep = LM_head_rep(*gpt2_model.lm_head.weight.size()[::-1])
-    logging.info(f'AdaVAE params: {num_params(AdaVAE)}')
+    adavae_params = num_params(AdaVAE)
+    logging.info(f'AdaVAE params: {adavae_params}')
 
     # fix pre-trained parameters before certain iterations
     tuning_all_after_iters = int(args.iterations/6)
@@ -651,7 +653,10 @@ def train(args):
                     AdaVAE.encoder = unfreeze_GPT2_adapters(AdaVAE.encoder, encoder_unfreeze_modules)
                     for name, parameter in AdaVAE.named_parameters():
                         print((name, parameter.requires_grad))
-                    logging.info(f'AdaVAE params with gradients:{num_params(AdaVAE)}')
+                    adavae_params_with_gradients = num_params(AdaVAE)
+                    logging.info(f'AdaVAE params with gradients:{adavae_params_with_gradients}')
+                    logging.info('Additional parameters %d / %d = %.4f'%(adavae_params_with_gradients, adavae_params,
+                                                                         adavae_params_with_gradients/(adavae_params - adavae_params_with_gradients)))
                     tuning_all = True
 
                 if args.warmup != -1:

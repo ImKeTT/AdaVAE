@@ -1,6 +1,3 @@
-python adaVAE.py ex0116_as64_iter6k_ls60_layer3 --batch-sizes 128 --max_length 25 --add_attn --label_cond --adapter_size 64 --latent_size 60 --decoder_n_layer 3 &&\
-python adaVAE.py ex0116_as64_iter6k_ls60_layer6 --batch-sizes 128 --max_length 25 --add_attn --label_cond --adapter_size 64 --latent_size 60 --decoder_n_layer 6 &&\
-python adaVAE.py ex0116_as64_iter6k_ls240_layer3 --batch-sizes 128 --max_length 25 --add_attn --label_cond --adapter_size 64 --latent_size 240 --decoder_n_layer 3 &&\
-python adaVAE.py ex0116_as64_iter6k_ls240_layer6 --batch-sizes 128 --max_length 25 --add_attn --label_cond --adapter_size 64 --latent_size 240 --decoder_n_layer 6 &&\
-python adaVAE.py ex0116_as64_iter6k_ls480_layer3 --batch-sizes 128 --max_length 25 --add_attn --label_cond --adapter_size 64 --latent_size 480 --decoder_n_layer 3 &&\
-python adaVAE.py ex0116_as64_iter6k_ls480_layer6 --batch-sizes 128 --max_length 25 --add_attn --label_cond --adapter_size 64 --latent_size 480 --decoder_n_layer 6
+python adaVAE.py --batch-sizes 100 --max_length 25 --add_attn --label_cond --adapter_size 128 --iterations 10000 --latent_size 36 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 1.0 --adapter_scalar 1.2 &&\
+python adaVAE.py --batch-sizes 100 --max_length 25 --add_attn --label_cond --adapter_size 128 --iterations 10000 --latent_size 36 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 1.0 --adapter_scalar 1.5 &&\
+python adaVAE.py --batch-sizes 100 --max_length 25 --add_attn --label_cond --adapter_size 128 --iterations 10000 --latent_size 36 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 1.0 --adapter_scalar 2.0

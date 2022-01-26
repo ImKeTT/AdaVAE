@@ -25,6 +25,7 @@ class AdapterConfig(NamedTuple):
     mid_dim: int
     attn_bn: int
     prefix_dropout: float
+    tune_enc: bool
 
 
 def freeze_all_parameters(model: nn.Module) -> nn.Module:

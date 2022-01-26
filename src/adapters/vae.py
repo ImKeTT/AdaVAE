@@ -662,7 +662,7 @@ class Unmasked_AdapterBlock(Block):
                                 head_mask=head_mask,
                                 use_cache=use_cache,
                                 output_attentions=output_attentions,
-                                prefix_state=None,)
+                                prefix_state=prefix_state,)
         a = output_attn[0]  # output_attn: a, present, (attentions)
         outputs = output_attn[1:]
 
@@ -814,10 +814,12 @@ class Encoder(GPT2Model):
         self.wpe = nn.Embedding(config.n_positions, config.n_embd)
         self.drop = nn.Dropout(config.embd_pdrop)
         self.attn_mode = AdapterConfig.attn_mode
+        self.tune_enc = AdapterConfig.tune_enc
 
         # manually modify number of layers in encoder to accommodate GPU memory
         n = AdapterConfig.encoder_n_layer
-        self.h = nn.ModuleList([Unmasked_AdapterBlock(config.n_ctx, config, AdapterConfig, scale=True) for _ in range(n)])
+        self.h = nn.ModuleList([Unmasked_Block(config.n_ctx, config, AdapterConfig, scale=True) for _ in range(n)]) if self.tune_enc \
+            else nn.ModuleList([Unmasked_AdapterBlock(config.n_ctx, config, AdapterConfig, scale=True) for _ in range(n)])
         ## Fine-tuning encoder block
         # self.h = nn.ModuleList([Unmasked_Block(config.n_ctx, config, scale=True) for _ in range(n)])
 
@@ -930,8 +932,9 @@ class Encoder(GPT2Model):
 
             outputs = block(
                 hidden_states, layer_past=layer_past, attention_mask=attention_mask,
-                head_mask=head_mask[i], prefix_state=prefix_state[i] if isinstance(prefix_state, list) else prefix_state
-            )
+                head_mask=head_mask[i]) if self.tune_enc else\
+                block(hidden_states, layer_past=layer_past, attention_mask=attention_mask,
+                head_mask=head_mask[i], prefix_state=prefix_state[i] if isinstance(prefix_state, list) else prefix_state)
 
             hidden_states, present = outputs[:2]
             if self.output_past:
@@ -1299,7 +1302,7 @@ class VAEModel(GPT2LMHeadModel):
 
 class AdaVAEModel(GPT2LMHeadModel):
     def __init__(self, config, AdapterConfig, add_input=False, add_attn=False, add_softmax=False,
-                 attn_proj_vary=False, learn_prior=False, adv_loss=False, label_cond=False):
+                 attn_proj_vary=False, learn_prior=False, reg_loss="kld", label_cond=False):
         super(GPT2LMHeadModel, self).__init__(config)
 
         # add code here
@@ -1308,7 +1311,7 @@ class AdaVAEModel(GPT2LMHeadModel):
         self.add_softmax = add_softmax
         self.attn_proj_vary = attn_proj_vary
         self.learn_prior = learn_prior
-        self.use_adv_loss = adv_loss
+        self.reg_loss = reg_loss
         self.label_cond = label_cond
         self.AdapterConfig = AdapterConfig
 
@@ -1330,7 +1333,7 @@ class AdaVAEModel(GPT2LMHeadModel):
             nz = config.n_embd
             self.lm_head_rep = Conv1D(config.vocab_size, nz)
             # self.lm_head_rep = LM_head_rep(nz, config.vocab_size)
-        if self.use_adv_loss:
+        if self.reg_loss == "adversarial":
             self.discriminator = nn.Sequential(nn.Linear(config.n_embd, config.dis_emb),
                                                nn.ReLU(),
                                                nn.Linear(config.dis_emb, 1),
@@ -1368,6 +1371,12 @@ class AdaVAEModel(GPT2LMHeadModel):
         ## generator loss
         loss_g = F.binary_cross_entropy(self.discriminator(z), ones)
         return loss_d, loss_g
+
+    def symlog_loss(self, mean, logvar):
+        z0 = self.reparameterize(mean, logvar)
+        z1 = self.reparameterize(mean, logvar)
+        log_p = lambda x: -0.5 * torch.sum(torch.pow(x, 2), 1)
+        return torch.abs(torch.sum(log_p(z0) - log_p(z1)))
 
 
     def forward(
@@ -1420,11 +1429,15 @@ class AdaVAEModel(GPT2LMHeadModel):
             lm_logits = lm_logits + lm_logits_rep.unsqueeze(dim=1)
         outputs = (lm_logits,) + transformer_outputs[1:]
 
-        if self.use_adv_loss:
+        if self.reg_loss == "adversarial":
             regularization_loss = self.adv_loss(posterior_mean, posterior_logvar, prior_mean, prior_logvar)
-        else:
+        elif self.reg_loss == "kld":
             # kl_loss
             regularization_loss = self.kl_loss(posterior_mean, posterior_logvar, prior_mean, prior_logvar).unsqueeze(0)
+        elif self.reg_loss == "symlog":
+            regularization_loss = self.symlog_loss(posterior_mean, posterior_logvar)
+        else:
+            raise TypeError("No such regularization loss implemented !")
         outputs = outputs + (regularization_loss, posterior_mean, posterior_logvar)
 
         return outputs  # lm_logits, presents, (all hidden_states), (attentions), (regularization_loss), (posterior_mean), (posterior_logvar)

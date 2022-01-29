@@ -138,6 +138,17 @@ def sample_sequence(model, length, label, batch_size=None,
             if if_end.all(): break
     return output, probability
 
+def tokenize(texts, tokenizer, device, args):
+    tokenizer.pad_token = tokenizer.eos_token
+    x_tokenized = tokenizer(texts, padding=True,
+                                 truncation=True,
+                            return_tensors='pt', max_length=args.max_length)
+    input_ids = x_tokenized['input_ids'][:, :-1].to(device)
+    attention_mask = x_tokenized['attention_mask'][:, 1:].to(device)
+    x_ids = x_tokenized['input_ids'][:, 1:].contiguous().to(device)
+    ## target, input tokens, mask
+    return x_ids, input_ids, attention_mask
+
 def num_params(model):
     return sum([np.prod(p.size()) for p in model.parameters() if p.requires_grad])
 

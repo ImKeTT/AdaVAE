@@ -65,7 +65,7 @@ parser.add_argument('--ffn_option', type=str, default="parallel_ffn",
 parser.add_argument('--attn_mode', type=str, default="prefix",
                     choices=['prefix', 'adapter', 'lora', 'none'],
                     help="attention transfer type")
-parser.add_argument('--reg_loss', type=str, default="prefix",
+parser.add_argument('--reg_loss', type=str, default="kld",
                     choices=['kld', 'adversarial', 'symlog'],
                     help="regularization loss for latent space")
 
@@ -163,18 +163,6 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, label_onehot, 
 
     return loss, ce_loss, regularization_loss, mean, logvar
 
-
-def tokenize(texts, tokenizer, device, args):
-    tokenizer.pad_token = tokenizer.eos_token
-    x_tokenized = tokenizer(texts, padding=True,
-                                 truncation=True,
-                            return_tensors='pt', max_length=args.max_length)
-    input_ids = x_tokenized['input_ids'][:, :-1].to(device)
-    attention_mask = x_tokenized['attention_mask'][:, 1:].to(device)
-    x_ids = x_tokenized['input_ids'][:, 1:].contiguous().to(device)
-    ## target, input tokens, mask
-    return x_ids, input_ids, attention_mask
-
 def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, label_onehot, loss_fn, beta, kl_rate, reg_loss_type, model_type):
     # output = []
     # if model_type == 'ae_vae_fusion':
@@ -230,7 +218,7 @@ def train(args):
     # logging
     experiment = f"{args.dataset}_iter{args.iterations}_as{args.adapter_size}_scalar{args.adapter_scalar}_{fusion_type}_beta{args.beta_0}" \
                  f"_reg-{args.reg_loss}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}_enc_layer-{args.encoder_n_layer}_" \
-                 f"dec_layer-{args.decoder_n_layer}_zdim-{args.latent_size}_zrate-{args.kl_rate}_tuneenc-{args.finetune_enc}_{now.month}.{now.day}"
+                 f"dec_layer-{args.decoder_n_layer}_zdim-{args.latent_size}_zrate-{args.kl_rate}_sd-{args.seed}_{now.month}.{now.day}"
     save_folder = os.path.join(args.out_dir, experiment)
     os.makedirs(os.path.join(save_folder, 'ckpt/model'), exist_ok=True)
     os.makedirs(os.path.join(save_folder, 'ckpt/opt'), exist_ok=True)
@@ -240,7 +228,7 @@ def train(args):
     logging_file = f"{args.dataset}_init-{args.adapter_init}_ada-scalar{args.adapter_scalar}_as{args.adapter_size}_" \
                    f"{fusion_type}_beta{args.beta_0}_reg-{args.reg_loss}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}" \
                    f"beta{args.beta_0}_enc_layer-{args.encoder_n_layer}_dec_layer-{args.decoder_n_layer}_" \
-                   f"zdim-{args.latent_size}_zrate-{args.kl_rate}_tuneenc-{args.finetune_enc}_{now.month}.{now.day}.log"
+                   f"zdim-{args.latent_size}_zrate-{args.kl_rate}_sd-{args.seed}_{now.month}.{now.day}.log"
     logging = Logger(os.path.join(save_folder, logging_file))
     # logging.basicConfig(filename=os.path.join(save_folder, 'train.log'),
     #                     level=logging.INFO, format='%(asctime)s--- %(message)s', filemode='w')
@@ -314,7 +302,7 @@ def train(args):
     AdaVAE = AdaVAEModel(config, ada_config, add_input=args.add_input, add_attn=args.add_attn, add_softmax=args.add_softmax,
                    attn_proj_vary=args.attn_proj_vary, learn_prior=args.learn_prior, reg_loss=args.reg_loss, label_cond=args.label_cond)
     init_para_frompretrained(AdaVAE.transformer, gpt2_model.transformer, share_para=True)
-    init_para_frompretrained(AdaVAE.encoder, gpt2_model.transformer, share_para=False)
+    init_para_frompretrained(AdaVAE.encoder, gpt2_model.transformer, share_para=True)
 
     ## freeze all prarameters expect the ones in adapters
     # AdaVAE = freeze_all_parameters(AdaVAE)
@@ -366,6 +354,12 @@ def train(args):
         num_workers=args.workers)
     test_loader = DataLoader(
         ConditionalGenerationDataset.from_file(f"../data/{args.dataset}/test.txt"),
+        batch_size=batch_schedule[-1][0],
+        pin_memory=True,
+        drop_last=True,
+        num_workers=args.workers)
+    val_loader = DataLoader(
+        ConditionalGenerationDataset.from_file(f"../data/{args.dataset}/valid.txt"),
         batch_size=batch_schedule[-1][0],
         pin_memory=True,
         drop_last=True,
@@ -701,9 +695,12 @@ def train(args):
                     logging.info('KL annealing restart')
 
                 if num_iters % 500 == 0:
+                    logging.info("test set")
                     val_step(test_loader)
+                    logging.info("validation set")
+                    val_step(val_loader)
 
-                if (num_iters + 1) % 5000 == 0:
+                if (num_iters + 1) % 10000 == 0:
                     logging.info('Saving model...')
                     logging.info("Iteration completed: %d, remained %d" % (num_iters, args.iterations - num_iters))
                     logging.info("Saving model...")
@@ -748,7 +745,6 @@ def train(args):
                 save_orderdict[name] = parameter
     torch.save(save_orderdict, os.path.join(save_folder, 'model_latest.pt'))
     logging.info('Training complete.')
-    logging.info("Training complete.")
 
 if __name__=="__main__":
     args = parser.parse_args()

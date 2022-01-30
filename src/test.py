@@ -7,10 +7,7 @@
 @feature: #Enter features here
 """
 import numpy as np
-import collections
 import torch, math, time, os, argparse, copy
-from logger import Logger
-from tensorboardX import SummaryWriter
 from tqdm import tqdm
 import torch.nn.functional as F
 from adapters.vae import *
@@ -61,7 +58,9 @@ parser.add_argument('--reg_loss', type=str, default="kld",
                     help="regularization loss for latent space")
 
 ## testing paramters
-parser.add_argument('--batch-sizes', nargs='+', type=int, default=[1],
+parser.add_argument("--mode", type=str, help="Testing mode", default="generate",
+                    choices=['generate', 'interpolate', 'reconstruct', 'analogy', 'cal_interpolate'])
+parser.add_argument('--batch_size', type=int, default=128,
                     help='batch size per GPU. Lists the schedule.')
 parser.add_argument('--seq-lens', nargs='+', type=int, default=[30],
                     help='seq length per sample. Lists the schedule.')
@@ -69,10 +68,13 @@ parser.add_argument('--max_length', type=int, default=30,
                     help='max length of every input sentence')
 parser.add_argument('--data-dir', type=str, default='data')
 parser.add_argument('--out-dir', type=str, default='out')
+parser.add_argument('--experiment', type=str, help="ckpt dirctory", default='out')
 parser.add_argument('--adapter_init', type=str, default='bert', choices=['lora', 'bert', 'lisa', 'other'],
                     help="parameter initialization method for adapter layers.")
 parser.add_argument('--workers', default=2, type=int, metavar='N',  help='number of data loading workers')
-parser.add_argument("--total_sents", default=10, type=int, help="Total sentences to test recontruction.")
+parser.add_argument("--total_sents", default=10, type=int, help="Total sentences to test recontruction/generation.")
+parser.add_argument("--max_test_batch", default=10, type=int, help="Total sentence pairs to test interpolation/analogy.")
+parser.add_argument("--num_interpolation_step", default=10, type=int)
 parser.add_argument("--degree_to_target", type=float, default="1.0")
 parser.add_argument("--max_val_batches", type=int, help="Max batch size number to test recontruction.", default=2000)
 
@@ -214,7 +216,7 @@ def interpolate(args, ada_config, model, tokenizer, device, batch_pair, num_inte
 
     return result
 
-def analogy(args, ada_config, model, tokenizer, device, batch_triple, num_interpolation_steps=10, top_k=100, top_p=0.5):
+def analogy(args, ada_config, model, tokenizer, device, batch_triple, top_k=100, top_p=0.5):
     endoftext = tokenizer.convert_tokens_to_ids("<|endoftext|>")
     with torch.no_grad():
         label0 = F.one_hot(torch.tensor(batch_triple['y'][0]),
@@ -236,7 +238,6 @@ def analogy(args, ada_config, model, tokenizer, device, batch_triple, num_interp
         latent_z3 = outputs[-2]
 
     result = defaultdict(str)
-    num_steps = num_interpolation_steps + 1
     latent_z = latent_z3 + args.degree_to_target * (latent_z2 - latent_z1)
     sents, _ = sample_sequence(model, args.max_length, latent_z.long().to(device),
                                batch_size=1, top_k=top_k, top_p=top_p,
@@ -297,5 +298,129 @@ def cal_rec(args, ada_config, model, tokenizer, device, eval_dataloader, save_di
     else:
         return rec_sents
 
+def test(args):
+    if not torch.cuda.is_available(): args.no_gpu = True
+    gpu = not args.no_gpu
+    if gpu:
+        print("There are ", torch.cuda.device_count(), " available GPUs!")
+        torch.cuda.set_device(args.gpu)
+        print('Current single GPU: {}'.format(torch.cuda.current_device()))
+    device = torch.device(args.gpu if gpu else "cpu")
+    tokenizer = GPT2Tokenizer.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
+    gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
+    # randomness
+    np.random.seed(args.seed)
+    prng = np.random.RandomState()
+    torch.random.manual_seed(args.seed)
+    if gpu: torch.cuda.manual_seed(args.seed); torch.cuda.manual_seed_all(args.seed)
+    config = GPT2Config()
+    ada_config = AdapterConfig(hidden_size=768,
+                               adapter_size=args.adapter_size,
+                               adapter_act='relu',
+                               adapter_initializer_range=1e-2,
+                               label_emb_size=args.label_emb_size,
+                               latent_size=args.latent_size,
+                               class_num=args.class_num,
+                               encoder_n_layer=args.encoder_n_layer,
+                               decoder_n_layer=args.decoder_n_layer,
+                               init=args.adapter_init,
+                               adapter_scalar=args.adapter_scalar,
+                               ffn_option=args.ffn_option,
+                               attn_mode=args.attn_mode,
+                               attn_option='none',
+                               mid_dim=30,
+                               attn_bn=25,
+                               prefix_dropout=0.1,
+                               tune_enc=args.finetune_enc)
+    AdaVAE = AdaVAEModel(config, ada_config, add_input=args.add_input, add_attn=args.add_attn,
+                         add_softmax=args.add_softmax,
+                         attn_proj_vary=args.attn_proj_vary, learn_prior=args.learn_prior, reg_loss=args.reg_loss,
+                         label_cond=args.label_cond)
+    init_para_frompretrained(AdaVAE.transformer, gpt2_model.transformer, share_para=True)
+    init_para_frompretrained(AdaVAE.encoder, gpt2_model.transformer, share_para=True)
+
+    ## load ckpt
+    # experiment = args.experiment
+    latest_date = 24
+    for experiment in os.listdir(args.out_dir):
+        if int(experiment.split(".")[-1])>=latest_date:
+            save_folder = os.path.join(args.out_dir, experiment)
+            print('Loading model weights...')
+            state = torch.load(os.path.join(save_folder, 'model_latest.pt'))  # , map_location='cpu' model_latest.pt
+            if 'module' in list(state.keys())[0]:  # model_path is data parallel model with attr 'module'
+                state_copy = copy.copy(state)
+                keys = state_copy.keys()
+                for k in keys:
+                    state[k.replace('module.', '')] = state.pop(k)
+            ## load trained parameters
+            if not args.save_all:
+                model_dict = AdaVAE.state_dict()
+                additional_dict = {k: v for k, v in state.items() if k in model_dict}
+                model_dict.update(additional_dict)
+                AdaVAE.load_state_dict(model_dict)
+                del model_dict
+            else:
+                AdaVAE.load_state_dict(state)
+                del state
+            mode = args.mode
+            assert mode in ['generate', 'interpolate', 'reconstruct', 'analogy', 'cal_interpolate'], "get invalid test mode.."
+
+            if mode == "generate":
+                save_dir = os.path.join(save_folder, "test_texts")
+                for label in range(args.class_num):
+                    generate(args, AdaVAE, save_dir, label, args.total_sents, tokenizer, device, topk=100, top_p=0.5)
+                print(f"Done generating {args.total_sents} for {args.class_num} class(es).")
+
+            elif mode == "interpolate":
+                test_loader = DataLoader(
+                    ConditionalGenerationDataset.from_file(f"../data/{args.dataset}/test.txt"),
+                    batch_size=2,
+                    pin_memory=True,
+                    drop_last=True,
+                    num_workers=args.workers)
+                result = []
+                with tqdm(total=min(len(test_loader), args.max_test_batch),
+                          desc=f"Interpolation for {args.max_test_batch} pairs") as pbar:
+                    for i, batch in enumerate(test_loader):
+                        result_ = interpolate(args, ada_config, AdaVAE, tokenizer, device, batch,
+                                             num_interpolation_steps=args.num_interpolation_step)
+                        result.append(result_)
+                        if i >args.max_test_batch:
+                            break
+                        pbar.update(1)
+                return result
+
+            elif mode == "reconstruct":
+                test_loader = DataLoader(
+                    ConditionalGenerationDataset.from_file(f"../data/{args.dataset}/test.txt"),
+                    batch_size=args.batch_size,
+                    pin_memory=True,
+                    drop_last=True,
+                    num_workers=args.workers)
+                cal_rec(args, ada_config, AdaVAE, tokenizer, device, test_loader)
+                print(f"Done reconstructing {args.total_sents} for test data set.")
+
+            elif mode == "analogy":
+                test_loader = DataLoader(
+                    ConditionalGenerationDataset.from_file(f"../data/{args.dataset}/test.txt"),
+                    batch_size=3,
+                    pin_memory=True,
+                    drop_last=True,
+                    num_workers=args.workers)
+                result = []
+                with tqdm(total=min(len(test_loader), args.max_test_batch),
+                          desc=f"Analogy for {args.max_test_batch} pairs") as pbar:
+                    for i, batch in enumerate(test_loader):
+                        result_ = analogy(args, ada_config, AdaVAE, tokenizer, device, batch)
+                        result.append(result_)
+                        if i > args.max_test_batch:
+                            break
+                        pbar.update(1)
+                return result
+
+            elif mode == "cal_interpolate":
+                pass
+
 if __name__=="__main__":
-    pass
+    args = parser.parse_args()
+    test(args)

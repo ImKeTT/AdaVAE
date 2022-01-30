@@ -366,10 +366,6 @@ def train(args):
         num_workers=args.workers)
     logging.info('Done.')
 
-    ###
-    val_loader = test_loader
-    ###
-
     logging.info('Wrapping models and optimizers...')
     # Apply linear scaling rule to increase batch size for short sequence training.
     lr_schedule = switch_schedule(linear_schedule(args), batch_schedule[cur_b_schedule][0] / batch_schedule[-1][0],

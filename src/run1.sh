@@ -1,1 +1,1 @@
-python adaVAE.py --batch-sizes 128 --max_length 25 --add_attn --label_cond --adapter_size 128 --iterations 6001 --latent_size 36 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 15
+python adaVAE.py --batch-sizes 128 --max_length 25 --add_attn --label_cond --adapter_size 128 --iterations 6000 --latent_size 36 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 15

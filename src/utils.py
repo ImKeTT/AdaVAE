@@ -85,12 +85,14 @@ def top_k_top_p_filtering(logits, top_k=100, top_p=0.95, filter_value=-float('In
 
     return logits
 
-def sample_sequence(model, length, label, batch_size=None,
+def sample_sequence(model, length, label, z=None, batch_size=None,
                     temperature=1, top_k=100, top_p=0.95, device='cuda',
                     sample=True, eos_token=None, model_type='cvae'):
     with torch.no_grad():
         # if model_type == 'cvae':
-        z = torch.randn([batch_size, model.AdapterConfig.latent_size], device=device)
+        if z is None:
+            z = torch.randn([batch_size, model.AdapterConfig.latent_size], device=device)
+        assert z.size() == torch.Size([batch_size, model.AdapterConfig.latent_size]), "get latent code with wrong size"
         label_emb = model.label_embedding(F.one_hot(label,
                                                     torch.tensor(model.AdapterConfig.class_num)).float().to(device))
         #     try:
@@ -112,7 +114,6 @@ def sample_sequence(model, length, label, batch_size=None,
         output = prev
         probability = torch.tensor([], dtype=torch.float, device=device)
         if_end = torch.tensor([False] * batch_size, dtype=torch.bool, device=device)
-
         for i in range(length): #trange
             last_hidden, mem = model.transformer(input_ids=prev, past=mem, representations=z, label_emb=label_emb)
 

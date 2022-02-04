@@ -76,7 +76,7 @@ parser.add_argument("--total_sents", default=10, type=int, help="Total sentences
 parser.add_argument("--max_test_batch", default=10, type=int, help="Total sentence pairs to test interpolation/analogy.")
 parser.add_argument("--num_interpolation_step", default=10, type=int)
 parser.add_argument("--degree_to_target", type=float, default="1.0")
-parser.add_argument("--max_val_batches", type=int, help="Max batch size number to test recontruction.", default=20000)
+parser.add_argument("--max_val_batches", type=int, help="Max batch size number to test recontruction.", default=30)
 parser.add_argument("--latest_date", type=str, help="Latest date for model testing.", default="1.25")
 
 ## metrics
@@ -290,7 +290,7 @@ def cal_rec(args, ada_config, model, tokenizer, device, eval_dataloader, save_di
                 # Sample sentences
                 sents = sents.tolist()
                 for i in range(len(sents)):
-                    sent = sents[0]
+                    sent = sents[i]
                     sent = sent[sent.index(endoftext) + 1:]
 
                     if endoftext in sent:
@@ -564,6 +564,7 @@ def test(args):
                 batch_size=args.batch_size,
                 pin_memory=True,
                 drop_last=True,
+                shuffle=False,
                 num_workers=args.workers)
             val_loader = DataLoader(
                 ConditionalGenerationDataset.from_file(f"../data/{args.dataset}/valid.txt"),

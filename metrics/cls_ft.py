@@ -20,7 +20,7 @@ import torch, logging, math, time, os, argparse, re, copy
 from apex import amp
 from tqdm import tqdm
 import datetime
-from transformers import AutoConfig, AutoTokenizer, AutoModelForSequenceClassification, AdamW
+from transformers import AutoConfig, AutoTokenizer, AutoModelForSequenceClassification, AdamW, get_linear_schedule_with_warmup
 
 
 devices = '1'
@@ -33,17 +33,17 @@ parser.add_argument('--lr', type=float, default = 2e-5)
 parser.add_argument("--seed", type=int, default=42)
 
 # parser.add_argument('--data_type', type=str, default='t1', choices=['t' + str(i) for i in range(9)], help="t: type")
-parser.add_argument('--iterations', type=int, default=300000)  # wp 850001  wi 300001 ax 300001 yp 800001
+parser.add_argument('--iterations', type=int, default=100000)  # wp 850001  wi 300001 ax 300001 yp 800001
 parser.add_argument('--dataset', type=str, default='yelp_polarity', choices=['yelp_polarity, imdb_polariry'],
                     help="Dataset to use for training")
 
 parser.add_argument('--class_num', type=int, default=2,
                     help="class number for controllable generation")
-parser.add_argument('--batch-sizes', nargs='+', type=int, default=[150],
+parser.add_argument('--batch-sizes', nargs='+', type=int, default=[100],
                     help='batch size per GPU. Lists the schedule.')
-parser.add_argument('--seq-lens', nargs='+', type=int, default=[30],
+parser.add_argument('--seq-lens', nargs='+', type=int, default=[50],
                     help='seq length per sample. Lists the schedule.')
-parser.add_argument('--max_length', type=int, default=25,
+parser.add_argument('--max_length', type=int, default=50,
                     help='max length of every input sentence')
 parser.add_argument('--data-dir', type=str, default='data')
 parser.add_argument('--out-dir', type=str, default='out')
@@ -105,11 +105,11 @@ class AutoModelClassificationFinetuner(nn.Module):
     def test_step(self, batch):
         loss, logits, _ = self.compute(batch)
 
-        y = batch['y'].to(self.device)
+        y = batch['y']
         a, y_hat = torch.max(logits, dim=1)
         test_acc = accuracy_score(y_hat.cpu(), y.cpu())
 
-        return test_acc, loss
+        return test_acc, loss.cpu()
 
 
 def train(args):
@@ -136,7 +136,6 @@ def train(args):
     # logging
     save_folder = os.path.join(args.out_dir, args.experiment)
     os.makedirs(os.path.join(save_folder, 'ckpt/model'), exist_ok=True)
-    os.makedirs(os.path.join(save_folder, 'ckpt/opt'), exist_ok=True)
     t_writer = SummaryWriter(os.path.join(save_folder, 'train'), flush_secs=5)
     v_writer = SummaryWriter(os.path.join(save_folder, 'test'), flush_secs=5)
     # importlib.reload(logging)
@@ -187,32 +186,36 @@ def train(args):
     model.train()
 
     optimizer = AdamW(model.parameters(), lr=args.lr, correct_bias=True)
+    scheduler = get_linear_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=0,
+        num_training_steps=args.iterations
+    )
     model, optimizer = amp.initialize(model, optimizer, opt_level=args.fp16_opt_level)
     num_iters=0
     e=0
     def val_step(val_loader):
         max_val_batches = 10
         model.eval()
-        n_examples = 0
-        val_acc_sum = 0
-        val_loss_sum = 0
+        val_acc_list = []
+        val_loss_list = []
         with tqdm(total=min(len(val_loader), max_val_batches), desc="Evaluating Model") as pbar:
             for i, val_data_dict in enumerate(val_loader):
                 with torch.no_grad():
                     val_acc, val_loss = model.test_step(val_data_dict)
-                    val_acc_sum += val_acc
-                    val_loss_sum += val_loss.item()
-                    n_examples += len(val_data_dict)
+                    val_acc_list.append(val_acc)
+                    val_loss_list.append(val_loss)
                 if i > max_val_batches:
                     break
                 pbar.update(1)
-        val_loss = val_loss_sum / n_examples
-        val_acc = val_acc_sum / n_examples
+        val_loss = np.mean(val_loss_list)
+        val_acc = np.mean(val_acc_list)
         v_writer.add_scalar('val_loss', val_loss, num_iters)
         v_writer.add_scalar('val_acc', val_acc, num_iters)
         logging.info('val loss    : %.4f' % val_loss)
         logging.info('val acc     : %.4f' % val_acc)
         model.train()
+    args.iterations = len(train_loader)*5 ## 5 epochs
     while num_iters < args.iterations:
         # Run epoch
         st = time.time()
@@ -231,12 +234,16 @@ def train(args):
                     scaled_loss.backward()
                     torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), 1.0)  # max_grad_norm=1.0
                 optimizer.step()
+                scheduler.step()
+                lr = scheduler.get_last_lr()[0]
 
                 # Log to Tensorboard
                 t_writer.add_scalar('loss', loss, num_iters)
                 t_writer.add_scalar('acc', acc, num_iters)
+                t_writer.add_scalar('lr', lr, num_iters)
 
                 st = time.time()
+                # logging.info("time %.4f" % st)
                 end = num_iters >= args.iterations
 
                 if end:

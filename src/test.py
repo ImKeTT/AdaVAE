@@ -289,8 +289,8 @@ def cal_rec(args, ada_config, model, tokenizer, device, eval_dataloader, save_di
                                            device=device, sample=False, eos_token=endoftext)
                 # Sample sentences
                 sents = sents.tolist()
-                for i in range(len(sents)):
-                    sent = sents[i]
+                for s in range(len(sents)):
+                    sent = sents[s]
                     sent = sent[sent.index(endoftext) + 1:]
 
                     if endoftext in sent:
@@ -299,7 +299,6 @@ def cal_rec(args, ada_config, model, tokenizer, device, eval_dataloader, save_di
 
                     sent = tokenizer.decode(sent).strip()
                     rec_sents.append(sent)
-            i += 1
             if i > args.max_val_batches:
                 break
             pbar.update(1)

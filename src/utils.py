@@ -206,6 +206,30 @@ def linear_schedule(args):
 
     return f
 
+
+def compare_date(date1: str, date2: str)->bool:
+    """
+    whether date2 is no earlier than date1
+    :param date1:
+    :param date2:
+    :return:
+    """
+    date1 = date1.split(".")
+    date2 = date2.split(".")
+    if date1[0] == date2[0]:
+        if int(date1[1]) <= int(date2[1]):
+            return True
+        else:
+            return False
+    else:
+        cal_day = lambda x: int(x[0]) * 30 + int(x[1])
+        if cal_day(date1) <= cal_day(date2):
+            return True
+        else:
+            return False
+
+
+
 ###############################
 ######## metrics utils ########
 ###############################

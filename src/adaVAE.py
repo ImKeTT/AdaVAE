@@ -407,7 +407,7 @@ def train(args):
 
     logging.info('Begin training iterations')
     logging.info("Begin training iterations")
-    max_val_batches = 20000  # max num. of val batches
+    max_val_batches = 200  # max num. of val batches
     logging.info("Total iteration: %d" % args.iterations)
     e = 0  # number of epoch
     num_iters = 0

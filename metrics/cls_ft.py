@@ -19,6 +19,7 @@ from torch.utils.data import Dataset, DataLoader
 import torch, logging, math, time, os, argparse, re, copy
 from apex import amp
 from tqdm import tqdm
+import random
 import datetime
 from transformers import AutoConfig, AutoTokenizer, AutoModelForSequenceClassification, AdamW, get_linear_schedule_with_warmup
 
@@ -33,13 +34,13 @@ parser.add_argument('--lr', type=float, default = 2e-5)
 parser.add_argument("--seed", type=int, default=42)
 
 # parser.add_argument('--data_type', type=str, default='t1', choices=['t' + str(i) for i in range(9)], help="t: type")
-parser.add_argument('--iterations', type=int, default=100000)  # wp 850001  wi 300001 ax 300001 yp 800001
-parser.add_argument('--dataset', type=str, default='yelp_polarity', choices=['yelp_polarity, imdb_polariry'],
+parser.add_argument('--iterations', type=int, default=50000)  # wp 850001  wi 300001 ax 300001 yp 800001
+parser.add_argument('--dataset', type=str, default='imdb_polarity', choices=['yelp_polarity, imdb_polariry'],
                     help="Dataset to use for training")
 
 parser.add_argument('--class_num', type=int, default=2,
                     help="class number for controllable generation")
-parser.add_argument('--batch-sizes', nargs='+', type=int, default=[100],
+parser.add_argument('--batch-sizes', nargs='+', type=int, default=[128],
                     help='batch size per GPU. Lists the schedule.')
 parser.add_argument('--seq-lens', nargs='+', type=int, default=[50],
                     help='seq length per sample. Lists the schedule.')
@@ -66,7 +67,8 @@ class AutoModelClassificationFinetuner(nn.Module):
                  max_length: int = 100,
                  lr: float = 2e-05,
                  eps: float = 1e-08,
-                 device: str = 'cuda'):
+                 device: str = 'cuda',
+                 ckpt: str = None):
         super(AutoModelClassificationFinetuner, self).__init__()
         self.max_length = max_length
         self.lr = lr
@@ -77,9 +79,18 @@ class AutoModelClassificationFinetuner(nn.Module):
                                             num_labels=n_classes,
                                             output_attentions=False,
                                             output_hidden_states=False,
-                                            torchscript=True, cache_dir="/data/zhangsy/_cache/torch/transformers/bert-base-uncased")
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False, cache_dir="/data/zhangsy/_cache/torch/transformers/bert-base-uncased")
-        self.model = AutoModelForSequenceClassification.from_pretrained(model_name, config=config, cache_dir="/data/zhangsy/_cache/torch/transformers/bert-base-uncased")
+                                            torchscript=True,
+                                            cache_dir="/data/zhangsy/_cache/torch/transformers/bert-base-uncased")
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name,
+                                                       use_fast=False,
+                                                       cache_dir="/data/zhangsy/_cache/torch/transformers/bert-base-uncased")
+        if ckpt is None:
+            self.model = AutoModelForSequenceClassification.from_pretrained(model_name,
+                                                                            config=config,
+                                                                            cache_dir="/data/zhangsy/_cache/torch/transformers/bert-base-uncased")
+        else:
+            state = torch.load(ckpt)
+            self.model = AutoModelForSequenceClassification.from_pretrained(model_name, config=config, state_dict=state)
 
     def tokenize(self, texts):
         x_tokenized = self.tokenizer(texts, padding=True, truncation=True,
@@ -153,7 +164,7 @@ def train(args):
     model_name = "bert-base-uncased"
     # Hack to allow tokenizing longer sequences.
     # tokenizer.max_len = int(1e12)
-    model = AutoModelClassificationFinetuner(model_name, n_classes=2 if args.dataset=="yelp_polarity" else 4, lr=args.lr)
+    model = AutoModelClassificationFinetuner(model_name, n_classes=args.class_num, lr=args.lr)
 
 
     print('Setup data...')
@@ -215,7 +226,7 @@ def train(args):
         logging.info('val loss    : %.4f' % val_loss)
         logging.info('val acc     : %.4f' % val_acc)
         model.train()
-    args.iterations = len(train_loader)*5 ## 5 epochs
+    # args.iterations = len(train_loader)*5 ## 5 epochs
     while num_iters < args.iterations:
         # Run epoch
         st = time.time()
@@ -272,7 +283,101 @@ def train(args):
     save_orderdict = model.state_dict()
     torch.save(save_orderdict,
                os.path.join(save_folder, 'ckpt/model',
-                            'model_' + '{:07d}'.format(num_iters) + '.pt'))
+                            'model_latest'.format(num_iters) + '.pt'))
+
+def process_generated_texts(args, path):
+    sentences_all = []
+    for i in args.class_num:
+        with open(os.path.join(path, f"5000-label{i}.txt"), 'r') as f:
+            sentences = f.readlines()
+        sentences = [f"{int(i)}\t"+ins for ins in sentences]
+        sentences_all.extend(sentences)
+    random.shuffle(sentences_all)
+    return sentences_all
+
+def test(args, path):
+    now = datetime.datetime.now()
+    # GPU
+    if not torch.cuda.is_available(): args.no_gpu = True
+    gpu = not args.no_gpu
+    if gpu:
+        print("There are ", torch.cuda.device_count(), " available GPUs!")
+        # print('Setting GPUs {}'.format(args.device))
+        print('Using GPU devices {}'.format(devices))
+        torch.cuda.set_device(args.gpu)
+        print('Current single GPU: {}'.format(torch.cuda.current_device()))
+    device = torch.device(args.gpu if gpu else "cpu")
+
+    # randomness
+    np.random.seed(args.seed)
+    prng = np.random.RandomState()
+    torch.random.manual_seed(args.seed)
+    if gpu:
+        torch.cuda.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
+
+    args.experiment = f"cls_train_{args.dataset}_{now.month}.{now.day}"
+    # logging
+    save_folder = os.path.join(args.out_dir, args.experiment)
+    os.makedirs(os.path.join(save_folder, 'ckpt/model'), exist_ok=True)
+    logging = Logger(os.path.join(save_folder, f'cls_train_{args.dataset}.log'))
+    # logging.basicConfig(filename=os.path.join(save_folder, 'train.log'),
+    #                     level=logging.INFO, format='%(asctime)s--- %(message)s', filemode='w')
+    logging.info('\n*******************************************************************************\n')
+    logging.info("the configuration:")
+    logging.info(str(args).replace(',', '\n'))
+
+    print('Loading models...')
+    # cache_dir = os.path.join(args.out_dir, 'model_cache')
+    # os.makedirs(cache_dir, exist_ok=True)
+    # Load pre-trained teacher tokenizer (vocabulary)
+    model_name = "bert-base-uncased"
+    model = AutoModelClassificationFinetuner(model_name, n_classes=args.class_num, lr=args.lr, ckpt="")
+
+    print('Setup data...')
+    # Batch and sequence length schedule
+    assert len(args.batch_sizes) == len(args.seq_lens)
+    batch_schedule = list(zip(map(int, args.batch_sizes), map(int, args.seq_lens)))
+    assert len(batch_schedule) <= 2, 'Currently not supporting multiple schedule'
+    args.switch_time = 0
+    cur_b_schedule = len(batch_schedule) - 1 if args.switch_time == 0 else 0
+    print('Batch schedule', batch_schedule)
+
+    eval_list = process_generated_texts(args, path)
+    dataloader = DataLoader(
+        ConditionalGenerationDataset(eval_list),
+        batch_size=batch_schedule[cur_b_schedule][0],
+        pin_memory=True,
+        drop_last=True,
+        num_workers=args.workers)
+    print('Done.')
+
+    model = model.to(device)
+    model.eval()
+
+    def val_step(val_loader):
+        max_val_batches = 99999
+        model.eval()
+        val_acc_list = []
+        val_loss_list = []
+        with tqdm(total=min(len(val_loader), max_val_batches), desc="Evaluating Model") as pbar:
+            for i, val_data_dict in enumerate(val_loader):
+                with torch.no_grad():
+                    val_acc, val_loss = model.test_step(val_data_dict)
+                    val_acc_list.append(val_acc)
+                    val_loss_list.append(val_loss)
+                if i > max_val_batches:
+                    break
+                pbar.update(1)
+        val_loss = np.mean(val_loss_list)
+        val_acc = np.mean(val_acc_list)
+        logging.info('val loss    : %.4f' % val_loss)
+        logging.info('val acc     : %.4f' % val_acc)
+        model.train()
+
+        val_step(dataloader)
+
+    logging.info("Testing Finished..")
 
 if __name__=="__main__":
     args = parser.parse_args()

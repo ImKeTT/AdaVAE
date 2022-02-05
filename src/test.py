@@ -106,6 +106,7 @@ parser.add_argument('--add_softmax', action="store_true")
 parser.add_argument('--attn_proj_vary', action="store_true")
 parser.add_argument('--finetune_enc', action="store_true")
 parser.add_argument('--test_model', action="store_true")
+parser.add_argument('--do_sample', action="store_true", help="sample for reconstruction")
 
 def generate(args, model, save_dir, label, bsz, tokenizer, device, parallel=False, topk=100, top_p=0.95):
     endoftext = tokenizer.convert_tokens_to_ids("<|endoftext|>")
@@ -272,7 +273,7 @@ def analogy(args, ada_config, model, tokenizer, device, batch_triple, top_k=100,
 
     return result
 
-def cal_rec(args, ada_config, model, tokenizer, device, eval_dataloader, save_dir=None, top_k=100, top_p=0.95):
+def cal_rec(args, ada_config, model, tokenizer, device, eval_dataloader, save_dir=None, sample=False, top_k=100, top_p=0.95):
     endoftext = tokenizer.convert_tokens_to_ids("<|endoftext|>")
     rec_sents = []
     with tqdm(total=min(len(eval_dataloader), args.max_val_batches), desc="Evaluating Model") as pbar:
@@ -286,7 +287,7 @@ def cal_rec(args, ada_config, model, tokenizer, device, eval_dataloader, save_di
                 sents, _ = sample_sequence(model, args.max_length, torch.tensor(batch['y']),
                                            z=latent_z,
                                            batch_size=args.batch_size, top_k=top_k, top_p=top_p,
-                                           device=device, sample=False, eos_token=endoftext)
+                                           device=device, sample=sample, eos_token=endoftext)
                 # Sample sentences
                 sents = sents.tolist()
                 for s in range(len(sents)):
@@ -303,7 +304,7 @@ def cal_rec(args, ada_config, model, tokenizer, device, eval_dataloader, save_di
                 break
             pbar.update(1)
     if not save_dir is None:
-        with open(f"{save_dir}/reconstruction.txt", 'w') as f:
+        with open(f"{save_dir}/reconstruction_sample-{sample}.txt", 'w') as f:
             for sent in rec_sents:
                 f.write(sent + "\n")
     else:
@@ -605,7 +606,9 @@ def test(args):
                 return result
 
             elif mode == "reconstruct":
-                cal_rec(args, ada_config, AdaVAE, tokenizer, device, test_loader, save_dir)
+                if args.do_sample: do_sample = True
+                else: do_sample = False
+                cal_rec(args, ada_config, AdaVAE, tokenizer, device, test_loader, save_dir, sample=do_sample)
                 print(f"Done reconstructing for test data set.")
 
             elif mode == "analogy":
@@ -632,5 +635,5 @@ def test(args):
 if __name__=="__main__":
     # args = parser.parse_args()
     args = parser.parse_args('--mode reconstruct '
-                             '--out-dir out --label_cond --add_attn --total_sents 5000 --max_length 50 --batch_size 128'.split())
+                             '--out-dir out --label_cond --add_attn --total_sents 5000 --max_length 50 --batch_size 128 --do_sample'.split())
     test(args)

@@ -13,8 +13,9 @@ import torch.nn as nn
 import numpy as np
 from src.logger import Logger
 from src.data import ConditionalGenerationDataset
+from src.utils import *
 from tensorboardX import SummaryWriter
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from torch.utils.data import Dataset, DataLoader
 import torch, logging, math, time, os, argparse, re, copy
 from apex import amp
@@ -35,7 +36,7 @@ parser.add_argument("--seed", type=int, default=42)
 
 # parser.add_argument('--data_type', type=str, default='t1', choices=['t' + str(i) for i in range(9)], help="t: type")
 parser.add_argument('--iterations', type=int, default=50000)  # wp 850001  wi 300001 ax 300001 yp 800001
-parser.add_argument('--dataset', type=str, default='imdb_polarity', choices=['yelp_polarity, imdb_polariry'],
+parser.add_argument('--dataset', type=str, default='yelp_polarity', choices=['yelp_polarity, imdb_polariry'],
                     help="Dataset to use for training")
 
 parser.add_argument('--class_num', type=int, default=2,
@@ -110,7 +111,7 @@ class AutoModelClassificationFinetuner(nn.Module):
 
         loss, logits = self(*self.tokenize(x), labels=y)
         a, y_train = torch.max(logits, dim=1)
-        train_acc = accuracy_score(y_train.cpu(), y.cpu())
+        train_acc = accuracy_score(y.cpu(), y_train.cpu())
         return loss, logits, train_acc
 
     def test_step(self, batch):
@@ -118,9 +119,13 @@ class AutoModelClassificationFinetuner(nn.Module):
 
         y = batch['y']
         a, y_hat = torch.max(logits, dim=1)
-        test_acc = accuracy_score(y_hat.cpu(), y.cpu())
+        test_acc = accuracy_score(y.cpu(), y_hat.cpu())
+        test_recall = recall_score(y.cpu(), y_hat.cpu(), average='macro')
+        test_precision = precision_score(y.cpu(), y_hat.cpu(), average='macro')
+        test_f1 = f1_score(y.cpu(), y_hat.cpu(), average='macro')
 
-        return test_acc, loss.cpu()
+
+        return test_acc, test_recall, test_precision, test_f1, loss.cpu()
 
 
 def train(args):
@@ -213,7 +218,7 @@ def train(args):
         with tqdm(total=min(len(val_loader), max_val_batches), desc="Evaluating Model") as pbar:
             for i, val_data_dict in enumerate(val_loader):
                 with torch.no_grad():
-                    val_acc, val_loss = model.test_step(val_data_dict)
+                    val_acc, val_recall, val_precision, val_f1, val_loss = model.test_step(val_data_dict)
                     val_acc_list.append(val_acc)
                     val_loss_list.append(val_loss)
                 if i > max_val_batches:
@@ -316,11 +321,8 @@ def test(args, path):
         torch.cuda.manual_seed(args.seed)
         torch.cuda.manual_seed_all(args.seed)
 
-    args.experiment = f"cls_train_{args.dataset}_{now.month}.{now.day}"
     # logging
-    save_folder = os.path.join(args.out_dir, args.experiment)
-    os.makedirs(os.path.join(save_folder, 'ckpt/model'), exist_ok=True)
-    logging = Logger(os.path.join(save_folder, f'cls_train_{args.dataset}.log'))
+    logging = Logger(os.path.join(path, f'cls_test.log'))
     # logging.basicConfig(filename=os.path.join(save_folder, 'train.log'),
     #                     level=logging.INFO, format='%(asctime)s--- %(message)s', filemode='w')
     logging.info('\n*******************************************************************************\n')
@@ -332,7 +334,8 @@ def test(args, path):
     # os.makedirs(cache_dir, exist_ok=True)
     # Load pre-trained teacher tokenizer (vocabulary)
     model_name = "bert-base-uncased"
-    model = AutoModelClassificationFinetuner(model_name, n_classes=args.class_num, lr=args.lr, ckpt="")
+    ckpt = os.path.join(args.out_dir, f"cls_train_{args.dataset}_2.4/ckpt/model/model_latest.pt")
+    model = AutoModelClassificationFinetuner(model_name, n_classes=args.class_num, lr=args.lr, ckpt=ckpt)
 
     print('Setup data...')
     # Batch and sequence length schedule
@@ -359,23 +362,40 @@ def test(args, path):
         max_val_batches = 99999
         model.eval()
         val_acc_list = []
+        val_recall_list = []
+        val_precision_list = []
+        val_f1_list = []
         val_loss_list = []
         with tqdm(total=min(len(val_loader), max_val_batches), desc="Evaluating Model") as pbar:
             for i, val_data_dict in enumerate(val_loader):
                 with torch.no_grad():
-                    val_acc, val_loss = model.test_step(val_data_dict)
+                    val_acc, val_recall, val_precision, val_f1, val_loss = model.test_step(val_data_dict)
                     val_acc_list.append(val_acc)
+                    val_recall_list.append(val_recall)
+                    val_precision_list.append(val_precision)
+                    val_f1_list.append(val_f1)
                     val_loss_list.append(val_loss)
                 if i > max_val_batches:
                     break
                 pbar.update(1)
         val_loss = np.mean(val_loss_list)
+
         val_acc = np.mean(val_acc_list)
-        logging.info('val loss    : %.4f' % val_loss)
-        logging.info('val acc     : %.4f' % val_acc)
+        val_acc_std = np.std(val_acc_list)
+        val_recall = np.mean(val_recall_list)
+        val_recall_std = np.std(val_recall_list)
+        val_precision = np.mean(val_precision_list)
+        val_precision_std = np.std(val_precision_list)
+        val_f1 = np.mean(val_f1_list)
+        val_f1_std = np.std(val_f1_list)
+        logging.info('val loss      : %.4f' % val_loss)
+        logging.info('val acc       : %.4f + %.4f' % (val_acc, val_acc_std))
+        logging.info('val recall    : %.4f + %.4f' % (val_recall, val_recall_std))
+        logging.info('val precision : %.4f + %.4f' % (val_precision, val_precision_std))
+        logging.info('val f1        : %.4f + %.4f' % (val_f1, val_f1_std))
         model.train()
 
-        val_step(dataloader)
+    val_step(dataloader)
 
     logging.info("Testing Finished..")
 

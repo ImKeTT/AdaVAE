@@ -36,7 +36,7 @@ parser.add_argument("--seed", type=int, default=42)
 
 # parser.add_argument('--data_type', type=str, default='t1', choices=['t' + str(i) for i in range(9)], help="t: type")
 parser.add_argument('--iterations', type=int, default=50000)  # wp 850001  wi 300001 ax 300001 yp 800001
-parser.add_argument('--dataset', type=str, default='yelp_polarity', choices=['yelp_polarity, imdb_polariry'],
+parser.add_argument('--dataset', type=str, default='imdb_polarity', choices=['yelp_polarity, imdb_polariry'],
                     help="Dataset to use for training")
 
 parser.add_argument('--class_num', type=int, default=2,

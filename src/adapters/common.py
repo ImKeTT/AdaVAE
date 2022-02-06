@@ -12,7 +12,6 @@ class AdapterConfig(NamedTuple):
     adapter_size: int
     adapter_act: Union[str, Callable]
     adapter_initializer_range: float
-    label_emb_size: int
     latent_size: int
     class_num: int
     encoder_n_layer: int
@@ -26,6 +25,7 @@ class AdapterConfig(NamedTuple):
     attn_bn: int
     prefix_dropout: float
     tune_enc: bool
+    tune_dec: bool
 
 
 def freeze_all_parameters(model: nn.Module) -> nn.Module:

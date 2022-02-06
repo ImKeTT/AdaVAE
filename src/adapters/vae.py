@@ -160,7 +160,7 @@ class Cond_Attention(Attention):
         outputs = [a, present] + attn_outputs[1:]
         return outputs  # a, present, (attentions)
 
-class MAM_Cond_Attention(Attention):
+class MAM_Attention(Attention):
     """
     parallel adapter with prefix-tuning and LoRA component
     """
@@ -235,7 +235,7 @@ class MAM_Cond_Attention(Attention):
             outputs.append(w)
         return outputs
 
-    def forward(self, x, z=None,
+    def forward(self, x, z,
                 layer_past=None,
                 attention_mask=None,
                 head_mask=None,
@@ -285,6 +285,7 @@ class MAM_Cond_Attention(Attention):
         elif self.attn_mode == "adapter":
             pass
 
+        ## PSA concat
         z_conv = self.c_z(z)
         key_z, value_z = z_conv.split(self.split_size, dim=2)
         key_z = self.split_heads(key_z, k=True)
@@ -606,12 +607,35 @@ class Unmasked_Block(Block):
         self.mlp = MLP(4 * nx, config)
 
 ## Additive attention block for method 2 in the paper
-class Cond_Block(Block):
+class Cond_Masked_Block(Block):
     def __init__(self, n_ctx, config, AdapterConfig, scale=False):
         super(Block, self).__init__()
         nx = config.n_embd
         self.ln_1 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
         self.attn = Cond_Attention(nx, n_ctx, config, AdapterConfig, scale)
+        self.ln_2 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
+        self.mlp = MLP(4 * nx, config)
+
+    def forward(self, x, z, layer_past=None, attention_mask=None, head_mask=None):
+        output_attn = self.attn(
+            self.ln_1(x), z, layer_past=layer_past, attention_mask=attention_mask, head_mask=head_mask
+        )
+        a = output_attn[0]  # output_attn: a, present, (attentions)
+
+        x = x + a
+        m = self.mlp(self.ln_2(x))
+        x = x + m
+
+        outputs = [x] + output_attn[1:]
+        return outputs  # x, present, (attentions)
+
+## Additive attention block for method 2 in the paper
+class Masked_Block(Block):
+    def __init__(self, n_ctx, config, AdapterConfig, scale=False):
+        super(Block, self).__init__()
+        nx = config.n_embd
+        self.ln_1 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
+        self.attn = MAM_Attention(nx, n_ctx, config, AdapterConfig, scale=scale)
         self.ln_2 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
         self.mlp = MLP(4 * nx, config)
 
@@ -707,7 +731,7 @@ class Unmasked_AdapterBlock(Block):
         return outputs  # x, present, (attentions)
 
 ## Additive attention block for method 2 in the paper
-class Cond_AdapterBlock(Block):
+class AdapterBlock(Block):
     """
     to infuse latent variable z to attention layers
     adapter-tuning essentially add down/up projection to the output
@@ -717,7 +741,7 @@ class Cond_AdapterBlock(Block):
         nx = config.n_embd
         self.ln_1 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
         # self.attn = Cond_Attention(nx, n_ctx, config, AdapterConfig, scale)
-        self.attn = MAM_Cond_Attention(nx, n_ctx, config, AdapterConfig, scale=scale)
+        self.attn = MAM_Attention(nx, n_ctx, config, AdapterConfig, scale=scale)
         self.ln_2 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
         if AdapterConfig.ffn_option == "pfeiffer":
             self.ln_3 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
@@ -726,11 +750,10 @@ class Cond_AdapterBlock(Block):
             self.ln_cross_attn = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
         self.mlp = MLP(4 * nx, config)
         self.Adaconfig = AdapterConfig
-        self.adapter = Cond_GPT2Adapter(AdapterConfig)
+        self.adapter = GPT2Adapter(AdapterConfig)
 
 
     def forward(self, x, z,
-                label_emb=None,
                 layer_past=None,
                 attention_mask=None,
                 head_mask=None,
@@ -739,7 +762,6 @@ class Cond_AdapterBlock(Block):
                 use_cache=False,
                 output_attentions=False,
                 prefix_state=None,):
-        assert (label_emb is not None), 'get none label embedding'
         output_attn = self.attn(
             self.ln_1(x), z,
                 layer_past=layer_past,
@@ -754,8 +776,8 @@ class Cond_AdapterBlock(Block):
         outputs = output_attn[1:]
 
         if self.Adaconfig.ffn_option == "sequential":
-            label_emb = label_emb.unsqueeze(1).repeat(1, x.size(1), 1)
-            x = self.adapter(x, label_emb)
+            # label_emb = label_emb.unsqueeze(1).repeat(1, x.size(1), 1)
+            x = self.adapter(x)
         ## residual connection
         x = x + a
         if encoder_hidden_states is not None:
@@ -779,19 +801,19 @@ class Cond_AdapterBlock(Block):
         ## hidden states
         m = self.mlp(self.ln_2(x))
         if self.Adaconfig.ffn_option == "parallel_attn":
-            label_emb = label_emb.unsqueeze(1).repeat(1, a.size(1), 1)
-            a = self.adapter(a, label_emb, False)
+            # label_emb = label_emb.unsqueeze(1).repeat(1, a.size(1), 1)
+            a = self.adapter(a, False)
             x = x + a
         elif self.Adaconfig.ffn_option == "parallel_ffn":
-            label_emb = label_emb.unsqueeze(1).repeat(1, x.size(1), 1)
-            x = self.adapter(x, label_emb)
+            # label_emb = label_emb.unsqueeze(1).repeat(1, x.size(1), 1)
+            x = self.adapter(x)
         elif self.Adaconfig.ffn_option == "sequential":
-            label_emb = label_emb.unsqueeze(1).repeat(1, m.size(1), 1)
-            m = self.adapter(m, label_emb)  ## a = a + adapter_change(a)
+            # label_emb = label_emb.unsqueeze(1).repeat(1, m.size(1), 1)
+            m = self.adapter(m)  ## a = a + adapter_change(a)
         x = x + m
         if self.Adaconfig.ffn_option == "pfeiffer":
-            label_emb = label_emb.unsqueeze(1).repeat(1, x.size(1), 1)
-            self.ln_3(self.adapter(x, label_emb, adapter_res=False, residual=m, adapter_layernorm_option="in") + a)
+            # label_emb = label_emb.unsqueeze(1).repeat(1, x.size(1), 1)
+            self.ln_3(self.adapter(x, adapter_res=False, residual=m, adapter_layernorm_option="in") + a)
         outputs = [x] + outputs
         return outputs  # x, present, (attentions)
 ####################### auxiliary attention blocks w/ Adapter END ########################
@@ -971,7 +993,7 @@ class Encoder(GPT2Model):
 
 
 class Decoder(GPT2Model):
-    def __init__(self, config, AdapterConfig, add_input=False, add_attn=False, attn_proj_vary=False, label_cond=True):
+    def __init__(self, config, AdapterConfig, add_input=False, add_attn=False, attn_proj_vary=False):
         """
 
         :param config:
@@ -986,7 +1008,6 @@ class Decoder(GPT2Model):
         self.add_input = add_input
         self.add_attn = add_attn
         self.attn_proj_vary = attn_proj_vary
-        self.label_cond = label_cond
 
         # self.output_hidden_states = config.output_hidden_states
         # self.output_attentions = config.output_attentions
@@ -994,6 +1015,7 @@ class Decoder(GPT2Model):
         self.output_hidden_states = False
         self.output_attentions = False  ## True is return hidden_states
         self.output_past = True
+        self.tune_dec = AdapterConfig.tune_dec
 
         self.wte = nn.Embedding(config.vocab_size, config.n_embd)
         self.wpe = nn.Embedding(config.n_positions, config.n_embd)
@@ -1004,21 +1026,21 @@ class Decoder(GPT2Model):
         if self.add_input:
             nz = AdapterConfig.latent_size
             nx = config.n_embd
-            nl = AdapterConfig.label_emb_size
-            self.input_proj = nn.Linear(nz + nl, nx, bias=False)
+            self.input_proj = nn.Linear(nz, nx, bias=False)
 
         if self.add_attn:
             nz = AdapterConfig.latent_size
             nx = config.n_embd
             n = AdapterConfig.decoder_n_layer
-            nl = AdapterConfig.label_emb_size
 
             if self.attn_proj_vary:
-                self.attn_proj = nn.Linear(nz + nl, nx * n, bias=False)
+                self.attn_proj = nn.Linear(nz, nx * n, bias=False)
             else:
-                self.attn_proj = nn.Linear(nz + nl, nx, bias=False)
-            self.h = nn.ModuleList([Cond_AdapterBlock(config.n_ctx, config, AdapterConfig,
-                                                      scale=True) for _ in range(n)])
+                self.attn_proj = nn.Linear(nz, nx, bias=False)
+            self.h = nn.ModuleList([Masked_Block(config.n_ctx, config, AdapterConfig,
+                                                 scale=True) for _ in range(n)]) if self.tune_dec else \
+                nn.ModuleList([AdapterBlock(config.n_ctx, config, AdapterConfig,
+                                            scale=True) for _ in range(n)])
             ## Fine-tuing decoder block
             # self.h = nn.ModuleList([Cond_Block(config.n_ctx, config, scale=True) for _ in range(config.n_layer)])
         else:
@@ -1041,7 +1063,6 @@ class Decoder(GPT2Model):
             head_mask=None,
             inputs_embeds=None,
             representations=None,
-            label_emb = None,
     ):
         prefix_state = None
         if self.attn_mode == "prefix":
@@ -1120,7 +1141,7 @@ class Decoder(GPT2Model):
         ## method 1 in the paper: add to word embedding
         if self.add_input:
             assert (representations is not None)
-            representations = torch.cat([representations, label_emb], dim=-1)
+            # representations = torch.cat([representations, label_emb], dim=-1)
             input_proj = self.input_proj(representations).unsqueeze(1)
             hidden_states = hidden_states + input_proj
 
@@ -1133,7 +1154,7 @@ class Decoder(GPT2Model):
         if self.add_attn:
             assert (representations is not None)
             ## add condition to latent representation via concatenation
-            representations = torch.cat([representations, label_emb], dim=-1)
+            # representations = torch.cat([representations, label_emb], dim=-1)
             attn_proj = self.attn_proj(representations).unsqueeze(1)
             if self.attn_proj_vary:
                 attn_proj = attn_proj.split(hidden_states.size(-1), dim=-1)
@@ -1152,15 +1173,12 @@ class Decoder(GPT2Model):
                 else:
                     z = attn_proj
                 ## add label embedding to decoder adapter
-                if self.label_cond:
-                    outputs = block(
-                        hidden_states, z, label_emb=label_emb, layer_past=layer_past, attention_mask=attention_mask,
-                        head_mask=head_mask[i], prefix_state=prefix_state[i] if isinstance(prefix_state, list) else prefix_state
-                    )
-                else:
-                    outputs = block(
-                        hidden_states, z, layer_past=layer_past, attention_mask=attention_mask, head_mask=head_mask[i]
-                    )
+
+                outputs = block(
+                    hidden_states, z, layer_past=layer_past, attention_mask=attention_mask,
+                    head_mask=head_mask[i], prefix_state=prefix_state[i] if isinstance(prefix_state, list) else prefix_state
+                )
+
             else:
                 outputs = block(
                     hidden_states, layer_past=layer_past, attention_mask=attention_mask, head_mask=head_mask[i]
@@ -1251,7 +1269,7 @@ class CodeBook(nn.Module):
 
 class VAEModel(GPT2LMHeadModel):
     def __init__(self, config, AdapterConfig, add_input=False, add_attn=False, add_softmax=False,
-                 attn_proj_vary=False, learn_prior=False, label_cond=False):
+                 attn_proj_vary=False, learn_prior=False):
         super(GPT2LMHeadModel, self).__init__(config)
 
         # add code here
@@ -1261,7 +1279,7 @@ class VAEModel(GPT2LMHeadModel):
         self.attn_proj_vary = attn_proj_vary
         self.learn_prior = learn_prior
 
-        self.transformer = Decoder(config, AdapterConfig, add_input, add_attn, attn_proj_vary, label_cond)
+        self.transformer = Decoder(config, AdapterConfig, add_input, add_attn, attn_proj_vary)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
         self.encoder = Encoder(config, AdapterConfig)
@@ -1293,7 +1311,6 @@ class VAEModel(GPT2LMHeadModel):
         position_ids=None,
         head_mask=None,
         inputs_embeds=None,
-        labels=None,
         x_mask=None,
         x_tokens=None,
         y_mask=None,
@@ -1344,7 +1361,7 @@ class VAEModel(GPT2LMHeadModel):
 
 class AdaVAEModel(GPT2LMHeadModel):
     def __init__(self, config, AdapterConfig, add_input=False, add_attn=False, add_softmax=False,
-                 attn_proj_vary=False, learn_prior=False, reg_loss="kld", label_cond=False):
+                 attn_proj_vary=False, learn_prior=False, reg_loss="kld"):
         super(GPT2LMHeadModel, self).__init__(config)
 
         # add code here
@@ -1354,18 +1371,11 @@ class AdaVAEModel(GPT2LMHeadModel):
         self.attn_proj_vary = attn_proj_vary
         self.learn_prior = learn_prior
         self.reg_loss = reg_loss
-        self.label_cond = label_cond
         self.AdapterConfig = AdapterConfig
 
         self.transformer = Decoder(config, AdapterConfig, add_input, add_attn,
-                                   attn_proj_vary, label_cond)
+                                   attn_proj_vary)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        if self.label_cond:
-            self.label_embedding = nn.Sequential(
-                nn.Linear(AdapterConfig.class_num, AdapterConfig.label_emb_size),
-                nn.ReLU(),
-                nn.Linear(AdapterConfig.label_emb_size, AdapterConfig.label_emb_size)
-            )
 
         self.encoder = Encoder(config, AdapterConfig)
         if self.learn_prior:
@@ -1430,7 +1440,6 @@ class AdaVAEModel(GPT2LMHeadModel):
         position_ids=None,
         head_mask=None,
         inputs_embeds=None,
-        label_onehot=None,
         from_prior=False,
         from_mean=False,
     ):
@@ -1452,9 +1461,6 @@ class AdaVAEModel(GPT2LMHeadModel):
             z = self.reparameterize(latent_mean, latent_logvar)
         assert not torch.isnan(z).any(), 'training get nan z'
 
-        if self.label_cond:
-            assert (label_onehot is not None), 'one hot label embedding get nan'
-            label_emb = self.label_embedding(label_onehot)
         transformer_outputs = self.transformer(input_ids,
                                                past=past,
                                                attention_mask=attention_mask,
@@ -1462,8 +1468,7 @@ class AdaVAEModel(GPT2LMHeadModel):
                                                position_ids=position_ids,
                                                head_mask=head_mask,
                                                inputs_embeds=inputs_embeds,
-                                               representations=z,
-                                               label_emb=label_emb)
+                                               representations=z)
         hidden_states = transformer_outputs[0]
         lm_logits = self.lm_head(hidden_states)
         if self.add_softmax:

@@ -66,6 +66,35 @@ class ConditionalGenerationDataset(Dataset):
             dl = f.readlines()
         return ConditionalGenerationDataset(dl)
 
+class GenerationDataset(Dataset):
+    def __init__(self, dl: list):
+        self.x = []
+        self.text_len = []
+        self.init_data(dl)
+        self.length = len(self.x)
+
+    def init_data(self, dl):
+        for inst in dl:
+            ## label
+            self.x.append(inst)
+            self.text_len.append(len(inst.split()))
+
+    def __getitem__(self, index: int) -> dict:
+        ## add BOS and EOS special token
+        x = '<|endoftext|> ' + self.x[index] + ' <|endoftext|>'
+
+        return {'x': str(x)}
+
+    def __len__(self):
+        return self.length
+
+    ## call for direct input
+    @staticmethod
+    def from_file(file_path: str):
+        with open(file_path, 'r') as f:
+            dl = f.readlines()
+        return GenerationDataset(dl)
+
 def collate_fn(samples: dict, eos_id: list, tokenizer):
     """ Creates a batch out of samples for direct input"""
     x_max_len = max(map(lambda s: len(s['x']), samples))

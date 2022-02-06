@@ -16,7 +16,7 @@ import torch.nn.functional as F
 from adapters.vae import *
 from utils import *
 from adapters.common import AdapterConfig
-from data import ConditionalGenerationDataset
+from data import ConditionalGenerationDataset, GenerationDataset
 import datetime
 
 from torch.utils.data import Dataset, DataLoader
@@ -28,7 +28,7 @@ from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, AdamW, get_
 
 
 # devices = '0'
-# os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 
 parser = argparse.ArgumentParser()
 
@@ -39,7 +39,7 @@ parser.add_argument("--seed", type=int, default=42)
 # parser.add_argument('--data_type', type=str, default='t1', choices=['t' + str(i) for i in range(9)], help="t: type")
 parser.add_argument('--model_type', type=str, default='cvae', choices=['cvae'])
 parser.add_argument('--iterations', type=int, default=2000 * 3)
-parser.add_argument('--dataset', type=str, default='yelp_polarity', choices=['yelp_polarity, imdb_polariry'],
+parser.add_argument('--dataset', type=str, default='yelp_data', choices=['yelp_data', 'yahoo_data', 'snli_data', 'penn_data'],
                     help="Dataset to use for training")
 parser.add_argument('--warmup', type=int, default=1000,
                     help="Amount of iterations to warmup, then decay. (-1 for no warmup and decay)")
@@ -55,8 +55,8 @@ parser.add_argument('--decoder_n_layer', type=int, default=12,
                     help="attention layer number of GPT-2 decoder")
 parser.add_argument('--class_num', type=int, default=2,
                     help="class number for controllable generation")
-parser.add_argument('--label_emb_size', type=int, default=8,
-                    help="label embedding size")
+# parser.add_argument('--label_emb_size', type=int, default=8,
+#                     help="label embedding size")
 parser.add_argument('--adapter_scalar', type=str, default="1.0",
                     help="adapter scalar")
 parser.add_argument('--ffn_option', type=str, default="parallel_ffn",
@@ -106,7 +106,7 @@ parser.add_argument('--cycle', type=int, default=2000)
 
 ## trigger
 parser.add_argument('--load', action="store_true")
-parser.add_argument('--label_cond', action="store_true")
+# parser.add_argument('--label_cond', action="store_true")
 parser.add_argument('--save_all', action="store_true", help="save full parameters of the model")
 parser.add_argument('--add_input', action="store_true")
 parser.add_argument('--add_attn', action="store_true")
@@ -114,11 +114,12 @@ parser.add_argument('--add_softmax', action="store_true")
 parser.add_argument('--attn_proj_vary', action="store_true")
 parser.add_argument('--learn_prior', action="store_true")
 parser.add_argument('--finetune_enc', action="store_true")
+parser.add_argument('--finetune_dec', action="store_true")
 
 # args = parser.parse_args('test --batch-sizes 1 --seq-lens 1024 '
 #                          '--add_input --learn_prior --fp16'.split()) # wi.12.proj_vary_beta_cvae
 
-def compute_loss(device, model, x_tokens, input_tokens, att_mask, label_onehot, loss_fn, beta, kl_rate, reg_loss):
+def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta, kl_rate, reg_loss):
     """
 
     :param device:
@@ -135,7 +136,7 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, label_onehot, 
     att_mask = att_mask.to(device)
     x_tokens = x_tokens.to(device)
 
-    outputs = model(input_ids=input_tokens, attention_mask=att_mask, label_onehot=label_onehot, from_mean=True)
+    outputs = model(input_ids=input_tokens, attention_mask=att_mask, from_mean=True)
     logits = outputs[0]
     regularization_loss = outputs[-3]
     mean = outputs[-2]
@@ -163,7 +164,7 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, label_onehot, 
 
     return loss, ce_loss, regularization_loss, mean, logvar
 
-def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, label_onehot, loss_fn, beta, kl_rate, reg_loss_type, model_type):
+def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, loss_fn, beta, kl_rate, reg_loss_type, model_type):
     # output = []
     # if model_type == 'ae_vae_fusion':
     #     optimizer.zero_grad()
@@ -178,7 +179,7 @@ def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, label
     #     output.append((loss.item(), ce_loss.mean().item(), kl_loss.item()))
 
     optimizer.zero_grad()
-    loss, ce_loss, reg_loss, _, _ = compute_loss(device, model, x_tokens, input_tokens, att_mask, label_onehot, loss_fn,
+    loss, ce_loss, reg_loss, _, _ = compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn,
                                           beta, kl_rate, reg_loss_type)
     with amp.scale_loss(loss, optimizer) as scaled_loss:
         scaled_loss.backward()
@@ -283,7 +284,6 @@ def train(args):
                                adapter_size=args.adapter_size,
                                adapter_act='relu',
                                adapter_initializer_range=1e-2,
-                               label_emb_size=args.label_emb_size,
                                latent_size=args.latent_size,
                                class_num=args.class_num,
                                encoder_n_layer=args.encoder_n_layer,
@@ -296,11 +296,12 @@ def train(args):
                                mid_dim=30,
                                attn_bn=25,
                                prefix_dropout=0.1,
-                               tune_enc = args.finetune_enc)
+                               tune_enc = args.finetune_enc,
+                               tune_dec=args.finetune_dec)
     assert ada_config.ffn_option in ['sequential', 'parallel_attn', 'parallel_ffn', 'pfeiffer'], 'expect proper ffn_option'
     ## latent (z) size is n_embd = 768
     AdaVAE = AdaVAEModel(config, ada_config, add_input=args.add_input, add_attn=args.add_attn, add_softmax=args.add_softmax,
-                   attn_proj_vary=args.attn_proj_vary, learn_prior=args.learn_prior, reg_loss=args.reg_loss, label_cond=args.label_cond)
+                   attn_proj_vary=args.attn_proj_vary, learn_prior=args.learn_prior, reg_loss=args.reg_loss)
     init_para_frompretrained(AdaVAE.transformer, gpt2_model.transformer, share_para=True)
     init_para_frompretrained(AdaVAE.encoder, gpt2_model.transformer, share_para=True)
 
@@ -329,8 +330,6 @@ def train(args):
                     'lm_head_rep']
         if args.reg_loss == "adversarial":
             new_pars.append('discriminator')
-        if args.label_cond:
-            new_pars.append('label_embedding')
 
         if not any([True if n in name else False for n in new_pars]):
             parameter.requires_grad = False
@@ -347,19 +346,19 @@ def train(args):
     logging.info('Batch schedule')
     logging.info(batch_schedule)
     train_loader = DataLoader(
-        ConditionalGenerationDataset.from_file(f"../data/{args.dataset}/train.txt"),
+        GenerationDataset.from_file(f"../data/optimus_dataset/{args.dataset}/train.txt"),
         batch_size=batch_schedule[cur_b_schedule][0],
         pin_memory=True,
         drop_last=True,
         num_workers=args.workers)
     test_loader = DataLoader(
-        ConditionalGenerationDataset.from_file(f"../data/{args.dataset}/test.txt"),
+        GenerationDataset.from_file(f"../data/optimus_dataset/{args.dataset}/test.txt"),
         batch_size=batch_schedule[-1][0],
         pin_memory=True,
         drop_last=True,
         num_workers=args.workers)
     val_loader = DataLoader(
-        ConditionalGenerationDataset.from_file(f"../data/{args.dataset}/valid.txt"),
+        GenerationDataset.from_file(f"../data/optimus_dataset/{args.dataset}/valid.txt"),
         batch_size=batch_schedule[-1][0],
         pin_memory=True,
         drop_last=True,
@@ -435,12 +434,12 @@ def train(args):
             for i, val_data_dict in enumerate(val_loader):
                 with torch.no_grad():
                     val_x_ids, val_input_ids, val_attention_mask = tokenize(val_data_dict['x'], tokenizer, device, args)
-                    val_label_onehot = F.one_hot(torch.tensor(val_data_dict['y']),
-                                             torch.tensor(ada_config.class_num)).float().to(device)
+                    # val_label_onehot = F.one_hot(torch.tensor(val_data_dict['y']),
+                    #                          torch.tensor(ada_config.class_num)).float().to(device)
 
                     val_loss, val_ce_loss, val_reg_loss, val_mu, val_lv = compute_loss(device, AdaVAE, val_x_ids,
                                                                                        val_input_ids, val_attention_mask,
-                                                                                       val_label_onehot, loss_fn, 1.0, 0.0, args.reg_loss)
+                                                                                       loss_fn, 1.0, 0.0, args.reg_loss)
                     # else:
                     #     loss, ce_loss, kl_loss = compute_loss_ae(device, AdaVAE, x_mask, x_tokens, y_mask, y_tokens,
                     #                                              input_tokens, target_tokens, mask, loss_fn, 1.0)
@@ -560,12 +559,10 @@ def train(args):
             for i, val_data_dict in enumerate(val_loader):
                 with torch.no_grad():
                     val_x_ids, val_input_ids, val_attention_mask = tokenize(val_data_dict['x'], tokenizer, device, args)
-                    val_label_onehot = F.one_hot(torch.tensor(val_data_dict['y']),
-                                             torch.tensor(ada_config.class_num)).float().to(device)
 
                     val_loss, val_ce_loss, val_reg_loss, val_mu, val_lv = compute_loss(device, AdaVAE, val_x_ids,
                                                                                        val_input_ids, val_attention_mask,
-                                                                                       val_label_onehot, loss_fn, 1.0, 0.0, args.reg_loss)
+                                                                                       loss_fn, 1.0, 0.0, args.reg_loss)
                 if cnt_au == 0:
                     var_sum = ((val_mu - mean_mean) ** 2).sum(dim=0)
                 else:
@@ -594,26 +591,23 @@ def train(args):
         logging.info('val reg_loss: %.4f' % reg)
         logging.info('val MI      : %.4f' % mi)
         logging.info('val AU      : %.4f' % n_au)
-        for cl in range(ada_config.class_num):
-            bsz = 5
-            sents, _ = sample_sequence(AdaVAE, args.max_length,
-                                    torch.full([bsz,], cl).long().to(device),
-                                    batch_size=bsz, top_k=100, top_p=0.95,
-                                    device=device, sample=True, eos_token=endoftext)
-            # Sample sentences
-            logging.info("-" * 50)
-            logging.info(f"Sentences with label {cl}:")
-            sents = sents.tolist()
-            for i in range(len(sents)):
-                sent = sents[i]
-                sent = sent[sent.index(endoftext) + 1:]
+        bsz = 5
+        sents, _ = sample_sequence(AdaVAE, args.max_length,
+                                batch_size=bsz, top_k=100, top_p=0.95,
+                                device=device, sample=True, eos_token=endoftext)
+        # Sample sentences
+        logging.info("-" * 50)
+        sents = sents.tolist()
+        for i in range(len(sents)):
+            sent = sents[i]
+            sent = sent[sent.index(endoftext) + 1:]
 
-                if endoftext in sent:
-                    idx = sent.index(endoftext)
-                    sent = sent[:idx]
+            if endoftext in sent:
+                idx = sent.index(endoftext)
+                sent = sent[:idx]
 
-                sent = tokenizer.decode(sent).strip()
-                logging.info(sent)
+            sent = tokenizer.decode(sent).strip()
+            logging.info(sent)
 
         AdaVAE.train()
 
@@ -630,8 +624,6 @@ def train(args):
         with tqdm(total=len(train_loader)) as pbar:
             for i, data_dict in enumerate(train_loader):
                 x_ids, input_ids, attention_mask = tokenize(data_dict['x'], tokenizer, device, args)
-                label_onehot = F.one_hot(torch.tensor(data_dict['y']),
-                                         torch.tensor(ada_config.class_num)).float().to(device)
 
                 if num_iters % args.cycle >= args.cycle - args.beta_warmup:
                     beta = min(1.0, beta + (1. - args.beta_0) / args.beta_warmup)
@@ -643,24 +635,32 @@ def train(args):
                         decoder_unfreeze_modules.append(Prefix)
                         encoder_unfreeze_modules.append(Prefix)
                     AdaVAE.transformer = unfreeze_GPT2_adapters(AdaVAE.transformer, decoder_unfreeze_modules)
-                    if args.finetune_enc:
-                        for _, parameter in AdaVAE.encoder.named_parameters():
-                            parameter.requires_grad = True
+                    if args.finetune_enc or args.finetune_dec:
+                        if args.finetune_enc:
+                            for _, parameter in AdaVAE.encoder.named_parameters():
+                                parameter.requires_grad = True
+                        if args.finetune_dec:
+                            for _, parameter in AdaVAE.transformer.named_parameters():
+                                parameter.requires_grad = True
                     else:
                         AdaVAE.encoder = unfreeze_GPT2_adapters(AdaVAE.encoder, encoder_unfreeze_modules)
                     for name, parameter in AdaVAE.named_parameters():
                         print((name, parameter.requires_grad))
                     adavae_params_with_gradients = num_params(AdaVAE)
                     logging.info(f'AdaVAE params with gradients:{adavae_params_with_gradients}')
-                    logging.info('Additional parameters %d / %d = %.4f'%(adavae_params_with_gradients, adavae_params,
-                                                                         adavae_params_with_gradients/(adavae_params - adavae_params_with_gradients)))
+                    if args.finetune_enc or args.finetune_dec:
+                        logging.info('Trainable parameters %d / %d= %.4f'%(adavae_params_with_gradients, adavae_params,
+                                                                             adavae_params_with_gradients/adavae_params))
+                    else:
+                        logging.info('Additional parameters %d / %d = %.4f'%(adavae_params_with_gradients, adavae_params,
+                                                                             adavae_params_with_gradients/(adavae_params - adavae_params_with_gradients)))
                     tuning_all = True
 
                 if args.warmup != -1:
                     scheduler.step()
 
                 loss, ce_loss, regul_loss = train_step(device, AdaVAE, optimizer, x_ids, input_ids, attention_mask,
-                                    label_onehot, loss_fn, beta, args.kl_rate, args.reg_loss, args.model_type)
+                                                       loss_fn, beta, args.kl_rate, args.reg_loss, args.model_type)
 
                 lr = scheduler.get_last_lr()[0]
                 # Log to Tensorboard
@@ -745,5 +745,6 @@ def train(args):
 if __name__=="__main__":
     args = parser.parse_args()
     # args = parser.parse_args('ex0116_as64_iter6k --batch-sizes 128 --max_length 25 --add_attn --label_cond --adapter_size 64 --latent_size 60 --decoder_n_layer 6'.split())
-    # args = parser.parse_args('--batch-sizes 126 --max_length 25 --add_attn --label_cond --adapter_size 64 --latent_size 60 --decoder_n_layer 6'.split())
+    args = parser.parse_args('--batch-sizes 128 --max_length 25 --add_attn --adapter_size 128 --latent_size 32 '
+                             '--decoder_n_layer 12 --encoder_n_layer 8 --adapter_init bert --attn_mode none --kl_rate 0.5'.split())
     train(args)

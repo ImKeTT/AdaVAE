@@ -16,7 +16,7 @@ from adaVAE import compute_loss
 from utils import *
 from collections import defaultdict
 from adapters.common import AdapterConfig
-from data import ConditionalGenerationDataset
+from data import ConditionalGenerationDataset, GenerationDataset
 import datetime
 
 from torch.utils.data import Dataset, DataLoader
@@ -45,8 +45,6 @@ parser.add_argument('--decoder_n_layer', type=int, default=12,
                     help="attention layer number of GPT-2 decoder")
 parser.add_argument('--class_num', type=int, default=2,
                     help="class number for controllable generation")
-parser.add_argument('--label_emb_size', type=int, default=8,
-                    help="label embedding size")
 parser.add_argument('--adapter_scalar', type=str, default="1.0",
                     help="adapter scalar")
 parser.add_argument('--ffn_option', type=str, default="parallel_ffn",
@@ -66,7 +64,7 @@ parser.add_argument('--batch_size', type=int, default=128,
                     help='batch size per GPU. Lists the schedule.')
 parser.add_argument('--max_length', type=int, default=30,
                     help='max length of every input sentence')
-parser.add_argument('--data-dir', type=str, default='data')
+parser.add_argument('--data-dir', type=str, default='data/optimus_dataset')
 parser.add_argument('--out-dir', type=str, default='out')
 parser.add_argument('--experiment', type=str, help="ckpt dirctory", default='out')
 parser.add_argument('--adapter_init', type=str, default='bert', choices=['lora', 'bert', 'lisa', 'other'],
@@ -108,11 +106,10 @@ parser.add_argument('--finetune_enc', action="store_true")
 parser.add_argument('--test_model', action="store_true")
 parser.add_argument('--do_sample', action="store_true", help="sample for reconstruction")
 
-def generate(args, model, save_dir, label, bsz, tokenizer, device, parallel=False, topk=100, top_p=0.95):
+def generate(args, model, save_dir, bsz, tokenizer, device, parallel=False, topk=100, top_p=0.95):
     endoftext = tokenizer.convert_tokens_to_ids("<|endoftext|>")
     if parallel or bsz <= 1000:
         sents, _ = sample_sequence(model, args.max_length,
-                                   torch.full([bsz, ], label).long().to(device),
                                    batch_size=bsz, top_k=topk, top_p=top_p,
                                    device=device, sample=True, eos_token=endoftext)
         sents = sents.tolist()
@@ -122,7 +119,6 @@ def generate(args, model, save_dir, label, bsz, tokenizer, device, parallel=Fals
         partition = int(bsz/1000)
         for i in range(partition):
             sents_, _ = sample_sequence(model, args.max_length,
-                                       torch.full([1000, ], label).long().to(device),
                                        batch_size=1000, top_k=topk, top_p=top_p,
                                        device=device, sample=True, eos_token=endoftext)
             sents.extend(sents_.tolist())
@@ -138,10 +134,10 @@ def generate(args, model, save_dir, label, bsz, tokenizer, device, parallel=Fals
 
         sent = tokenizer.decode(sent).strip()
         sentences_list.append(sent)
-    with open(f"{save_dir}/{bsz}-label{label}.txt", 'w') as f:
+    with open(f"{save_dir}/{bsz}.txt", 'w') as f:
         for sentence in sentences_list:
             f.write(sentence + '\n')
-    print(f"Finish generating {bsz} sentences with label {label}...")
+    print(f"Finish generating {bsz} sentences...")
 
 def cal_interpolate(args, ada_config, model, tokenizer, device, eval_dataloader, num_interpolation_steps=10, top_k=100, top_p=0.5):
     endoftext = tokenizer.convert_tokens_to_ids("<|endoftext|>")
@@ -151,10 +147,8 @@ def cal_interpolate(args, ada_config, model, tokenizer, device, eval_dataloader,
     for batch in tqdm(eval_dataloader, desc="Evaluating interpolation"):
         with torch.no_grad():
             if sample_interval == 0 or sample_interval == args.total_sents:
-                label = F.one_hot(torch.tensor(batch['y']),
-                                  torch.tensor(ada_config.class_num)).float().to(device)
                 x_ids, input_ids, attention_mask = tokenize(batch['x'], tokenizer, device, args)
-                outputs = model(input_ids=input_ids, attention_mask=attention_mask, label_onehot=label, from_mean=True)
+                outputs = model(input_ids=input_ids, attention_mask=attention_mask, from_mean=True)
                 latent_z = outputs[-2]
                 latent_codes.append(latent_z)
                 if sample_interval == 5:
@@ -176,7 +170,6 @@ def cal_interpolate(args, ada_config, model, tokenizer, device, eval_dataloader,
                                        device=device, sample=True, eos_token=endoftext)
         # Sample sentences
         sents = sents.tolist()
-        sentences_list = []
         ## bsz == 1 only sample 1 sentence for each interpolation step
         sent = sents[0]
         sent = sent[sent.index(endoftext) + 1:]
@@ -195,16 +188,12 @@ def cal_interpolate(args, ada_config, model, tokenizer, device, eval_dataloader,
 def interpolate(args, ada_config, model, tokenizer, device, batch_pair, num_interpolation_steps=10, top_k=100, top_p=0.5):
     endoftext = tokenizer.convert_tokens_to_ids("<|endoftext|>")
     with torch.no_grad():
-        label0 = F.one_hot(torch.tensor(batch_pair['y'][0]),
-                          torch.tensor(ada_config.class_num)).float().to(device)
         x_ids, input_ids, attention_mask = tokenize(batch_pair['x'][0], tokenizer, device, args)
-        outputs = model(input_ids=input_ids, attention_mask=attention_mask, label_onehot=label0, from_mean=True)
+        outputs = model(input_ids=input_ids, attention_mask=attention_mask, from_mean=True)
         latent_z1 = outputs[-2]
 
-        label1 = F.one_hot(torch.tensor(batch_pair['y'][1]),
-                           torch.tensor(ada_config.class_num)).float().to(device)
         x_ids, input_ids, attention_mask = tokenize(batch_pair['x'][1], tokenizer, device, args)
-        outputs = model(input_ids=input_ids, attention_mask=attention_mask, label_onehot=label1, from_mean=True)
+        outputs = model(input_ids=input_ids, attention_mask=attention_mask, from_mean=True)
         latent_z2 = outputs[-2]
     result = defaultdict(str)
     num_steps = num_interpolation_steps + 1
@@ -233,22 +222,16 @@ def interpolate(args, ada_config, model, tokenizer, device, batch_pair, num_inte
 def analogy(args, ada_config, model, tokenizer, device, batch_triple, top_k=100, top_p=0.5):
     endoftext = tokenizer.convert_tokens_to_ids("<|endoftext|>")
     with torch.no_grad():
-        label0 = F.one_hot(torch.tensor(batch_triple['y'][0]),
-                           torch.tensor(ada_config.class_num)).float().to(device)
         x_ids, input_ids, attention_mask = tokenize(batch_triple['x'][0], tokenizer, device, args)
-        outputs = model(input_ids=input_ids, attention_mask=attention_mask, label_onehot=label0, from_mean=True)
+        outputs = model(input_ids=input_ids, attention_mask=attention_mask, from_mean=True)
         latent_z1 = outputs[-2]
 
-        label1 = F.one_hot(torch.tensor(batch_triple['y'][1]),
-                           torch.tensor(ada_config.class_num)).float().to(device)
         x_ids, input_ids, attention_mask = tokenize(batch_triple['x'][1], tokenizer, device, args)
-        outputs = model(input_ids=input_ids, attention_mask=attention_mask, label_onehot=label1, from_mean=True)
+        outputs = model(input_ids=input_ids, attention_mask=attention_mask, from_mean=True)
         latent_z2 = outputs[-2]
 
-        label2 = F.one_hot(torch.tensor(batch_triple['y'][2]),
-                           torch.tensor(ada_config.class_num)).float().to(device)
         x_ids, input_ids, attention_mask = tokenize(batch_triple['x'][2], tokenizer, device, args)
-        outputs = model(input_ids=input_ids, attention_mask=attention_mask, label_onehot=label2, from_mean=True)
+        outputs = model(input_ids=input_ids, attention_mask=attention_mask, from_mean=True)
         latent_z3 = outputs[-2]
 
     result = defaultdict(str)
@@ -258,7 +241,6 @@ def analogy(args, ada_config, model, tokenizer, device, batch_triple, top_k=100,
                                device=device, sample=True, eos_token=endoftext)
     # Sample sentences
     sents = sents.tolist()
-    sentences_list = []
     ## bsz == 1 only sample 1 sentence for each interpolation step
     sent = sents[0]
     sent = sent[sent.index(endoftext) + 1:]
@@ -279,13 +261,10 @@ def cal_rec(args, ada_config, model, tokenizer, device, eval_dataloader, save_di
     with tqdm(total=min(len(eval_dataloader), args.max_val_batches), desc="Evaluating Model") as pbar:
         for i, batch in enumerate(eval_dataloader):
             with torch.no_grad():
-                label = F.one_hot(torch.tensor(batch['y']),
-                                  torch.tensor(ada_config.class_num)).float().to(device)
                 x_ids, input_ids, attention_mask = tokenize(batch['x'], tokenizer, device, args)
-                outputs = model(input_ids=input_ids, attention_mask=attention_mask, label_onehot=label, from_mean=True)
+                outputs = model(input_ids=input_ids, attention_mask=attention_mask, from_mean=True)
                 latent_z = outputs[-2]
-                sents, _ = sample_sequence(model, args.max_length, torch.tensor(batch['y']),
-                                           z=latent_z,
+                sents, _ = sample_sequence(model, args.max_length, z=latent_z,
                                            batch_size=args.batch_size, top_k=top_k, top_p=top_p,
                                            device=device, sample=sample, eos_token=endoftext)
                 # Sample sentences
@@ -332,12 +311,10 @@ def val_step(args, model, val_loader, ada_config, tokenizer, device):
         for i, val_data_dict in enumerate(val_loader):
             with torch.no_grad():
                 val_x_ids, val_input_ids, val_attention_mask = tokenize(val_data_dict['x'], tokenizer, device, args)
-                val_label_onehot = F.one_hot(torch.tensor(val_data_dict['y']),
-                                         torch.tensor(ada_config.class_num)).float().to(device)
 
                 val_loss, val_ce_loss, val_reg_loss, val_mu, val_lv = compute_loss(device, model, val_x_ids,
                                                                                    val_input_ids, val_attention_mask,
-                                                                                   val_label_onehot, loss_fn, 1.0, 0.0, args.reg_loss)
+                                                                                   loss_fn, 1.0, 0.0, args.reg_loss)
                 # else:
                 #     loss, ce_loss, kl_loss = compute_loss_ae(device, AdaVAE, x_mask, x_tokens, y_mask, y_tokens,
                 #                                              input_tokens, target_tokens, mask, loss_fn, 1.0)
@@ -457,12 +434,10 @@ def val_step(args, model, val_loader, ada_config, tokenizer, device):
         for i, val_data_dict in enumerate(val_loader):
             with torch.no_grad():
                 val_x_ids, val_input_ids, val_attention_mask = tokenize(val_data_dict['x'], tokenizer, device, args)
-                val_label_onehot = F.one_hot(torch.tensor(val_data_dict['y']),
-                                         torch.tensor(ada_config.class_num)).float().to(device)
 
                 val_loss, val_ce_loss, val_reg_loss, val_mu, val_lv = compute_loss(device, model, val_x_ids,
                                                                                    val_input_ids, val_attention_mask,
-                                                                                   val_label_onehot, loss_fn, 1.0, 0.0, args.reg_loss)
+                                                                                   loss_fn, 1.0, 0.0, args.reg_loss)
             if cnt_au == 0:
                 var_sum = ((val_mu - mean_mean) ** 2).sum(dim=0)
             else:
@@ -507,7 +482,6 @@ def test(args):
                                adapter_size=args.adapter_size,
                                adapter_act='relu',
                                adapter_initializer_range=1e-2,
-                               label_emb_size=args.label_emb_size,
                                latent_size=args.latent_size,
                                class_num=args.class_num,
                                encoder_n_layer=args.encoder_n_layer,
@@ -560,14 +534,14 @@ def test(args):
 
             args.dataset = '_'.join(experiment.split("_")[:2])
             test_loader = DataLoader(
-                ConditionalGenerationDataset.from_file(f"../data/{args.dataset}/test.txt"),
+                GenerationDataset.from_file(f"../data/optimus_dataset/{args.dataset}/test.txt"),
                 batch_size=args.batch_size,
                 pin_memory=True,
                 drop_last=True,
                 shuffle=False,
                 num_workers=args.workers)
             val_loader = DataLoader(
-                ConditionalGenerationDataset.from_file(f"../data/{args.dataset}/valid.txt"),
+                GenerationDataset.from_file(f"../data/optimus_dataset/{args.dataset}/valid.txt"),
                 batch_size=args.batch_size,
                 pin_memory=True,
                 drop_last=True,
@@ -582,13 +556,12 @@ def test(args):
             save_dir = os.path.join(save_folder, "test_texts")
             os.makedirs(save_dir, exist_ok=True)
             if mode == "generate":
-                for label in range(args.class_num):
-                    generate(args, AdaVAE, save_dir, label, args.total_sents, tokenizer, device, topk=100, top_p=0.95)
+                generate(args, AdaVAE, save_dir, args.total_sents, tokenizer, device, topk=100, top_p=0.95)
                 print(f"Done generating {args.total_sents} for {args.class_num} class(es).")
 
             elif mode == "interpolate":
                 test_loader = DataLoader(
-                    ConditionalGenerationDataset.from_file(f"../data/{args.dataset}/test.txt"),
+                    GenerationDataset.from_file(f"../data/optimus_dataset/{args.dataset}/test.txt"),
                     batch_size=2,
                     pin_memory=True,
                     drop_last=True,
@@ -613,7 +586,7 @@ def test(args):
 
             elif mode == "analogy":
                 test_loader = DataLoader(
-                    ConditionalGenerationDataset.from_file(f"../data/{args.dataset}/test.txt"),
+                    GenerationDataset.from_file(f"../data/optimus_dataset/{args.dataset}/test.txt"),
                     batch_size=3,
                     pin_memory=True,
                     drop_last=True,

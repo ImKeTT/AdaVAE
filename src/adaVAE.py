@@ -28,7 +28,7 @@ from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, AdamW, get_
 
 
 # devices = '0'
-os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+# os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 
 parser = argparse.ArgumentParser()
 
@@ -39,7 +39,8 @@ parser.add_argument("--seed", type=int, default=42)
 # parser.add_argument('--data_type', type=str, default='t1', choices=['t' + str(i) for i in range(9)], help="t: type")
 parser.add_argument('--model_type', type=str, default='cvae', choices=['cvae'])
 parser.add_argument('--iterations', type=int, default=2000 * 3)
-parser.add_argument('--dataset', type=str, default='yelp_data', choices=['yelp_data', 'yahoo_data', 'snli_data', 'penn_data'],
+parser.add_argument('--dataset', type=str, default='yelp_data', choices=['yelp_data', 'yahoo_data', 'snli_data',
+                                                                         'penn_data', 'yelp_polarity', 'imdb_polarity'],
                     help="Dataset to use for training")
 parser.add_argument('--warmup', type=int, default=1000,
                     help="Amount of iterations to warmup, then decay. (-1 for no warmup and decay)")
@@ -345,20 +346,26 @@ def train(args):
     cur_b_schedule = len(batch_schedule) - 1 if args.switch_time == 0 else 0
     logging.info('Batch schedule')
     logging.info(batch_schedule)
+    if args.dataset in ['yelp_polarity', 'imdb_polarity']:
+        prefix_path = "../data"
+        GDataset = ConditionalGenerationDataset
+    else:
+        prefix_path = "../data/optimus_dataset"
+        GDataset = GenerationDataset
     train_loader = DataLoader(
-        GenerationDataset.from_file(f"../data/optimus_dataset/{args.dataset}/train.txt"),
+        GDataset.from_file(os.path.join(prefix_path, args.dataset, "train.txt")),
         batch_size=batch_schedule[cur_b_schedule][0],
         pin_memory=True,
         drop_last=True,
         num_workers=args.workers)
     test_loader = DataLoader(
-        GenerationDataset.from_file(f"../data/optimus_dataset/{args.dataset}/test.txt"),
+        GDataset.from_file(os.path.join(prefix_path, args.dataset, "test.txt")),
         batch_size=batch_schedule[-1][0],
         pin_memory=True,
         drop_last=True,
         num_workers=args.workers)
     val_loader = DataLoader(
-        GenerationDataset.from_file(f"../data/optimus_dataset/{args.dataset}/valid.txt"),
+        GDataset.from_file(os.path.join(prefix_path, args.dataset, "valid.txt")),
         batch_size=batch_schedule[-1][0],
         pin_memory=True,
         drop_last=True,
@@ -696,7 +703,7 @@ def train(args):
                     logging.info("validation set")
                     val_step(val_loader)
 
-                if (num_iters + 1) % 10000 == 0:
+                if (num_iters + 1) % 3000 == 0:
                     logging.info('Saving model...')
                     logging.info("Iteration completed: %d, remained %d" % (num_iters, args.iterations - num_iters))
                     logging.info("Saving model...")
@@ -745,6 +752,6 @@ def train(args):
 if __name__=="__main__":
     args = parser.parse_args()
     # args = parser.parse_args('ex0116_as64_iter6k --batch-sizes 128 --max_length 25 --add_attn --label_cond --adapter_size 64 --latent_size 60 --decoder_n_layer 6'.split())
-    args = parser.parse_args('--batch-sizes 128 --max_length 25 --add_attn --adapter_size 128 --latent_size 32 '
-                             '--decoder_n_layer 12 --encoder_n_layer 8 --adapter_init bert --attn_mode none --kl_rate 0.5'.split())
+    # args = parser.parse_args('--batch-sizes 128 --max_length 25 --add_attn --adapter_size 128 --latent_size 32 '
+    #                          '--decoder_n_layer 12 --encoder_n_layer 8 --adapter_init bert --attn_mode none --kl_rate 0.5'.split())
     train(args)

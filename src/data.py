@@ -33,6 +33,121 @@ class DataFrameTextClassificationDataset(Dataset):
         df = pd.read_csv(file_path)
         return DataFrameTextClassificationDataset(df, x_label, y_label)
 
+
+class TextDataset_2Tokenizers_LCtrlG(Dataset):
+    def __init__(self, tokenizers, args, file_path='train', text_split_mode='natural', block_size=512, create_new=0):
+        """
+        taken from Optimus codes
+        :param tokenizers:
+        :param args:
+        :param file_path:
+        :param text_split_mode:
+        :param block_size:
+        :param create_new:
+        """
+        print(file_path)
+        assert os.path.isfile(file_path)
+        directory, filename = os.path.split(file_path)
+        cached_features_file = os.path.join(directory, f'cached_lm_gpt_bert_{block_size}_{filename}')
+
+        self.examples = []
+        self.tokenizers = tokenizers
+
+        # GPT tokenizers
+        self.pad_token=tokenizers[1].convert_tokens_to_ids([tokenizers[1].pad_token])[0]
+        self.bos_token=tokenizers[1].convert_tokens_to_ids([tokenizers[1].bos_token])[0]
+        self.eos_token=tokenizers[1].convert_tokens_to_ids([tokenizers[1].eos_token])[0]
+
+        if not create_new and os.path.exists(cached_features_file):
+            logger.info("Loading features from cached file %s", cached_features_file)
+            with open(cached_features_file, 'rb') as handle:
+                self.examples = pickle.load(handle)
+        else:
+            logger.info("Creating features from dataset file at %s", directory)
+
+            if text_split_mode == 'natural':
+                if args.dataset == 'Yelp':
+                    dropped = self._read_corpus_natural_split_yelp(fname=file_path, label=True, max_length=block_size, block_size=block_size)
+                    logger.info("The number of dropped sentences is %d", dropped)
+                elif args.dataset == 'yahoo':
+                    pass
+                else:
+                    raise NotImplementedError
+            else:
+                raise ValueError('Please specify the mode to split the raw text')
+
+            logger.info("Saving features into cached file %s", cached_features_file)
+            with open(cached_features_file, 'wb') as handle:
+                pickle.dump(self.examples, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+    def __len__(self):
+        return len(self.examples)
+
+    def __getitem__(self, item):
+        # pdb.set_trace()
+        # Convert to Tensors and build dataset
+        tokenized_text0= torch.tensor(self.examples[item][0], dtype=torch.long)
+        tokenized_text1= torch.tensor(self.examples[item][2], dtype=torch.long)
+        tokenized_text_lengths = torch.tensor([self.examples[item][1], self.examples[item][3]], dtype=torch.long)
+        label = torch.tensor(self.examples[item][4], dtype=torch.long)
+
+        # pdb.set_trace()
+        return (tokenized_text0, tokenized_text1, tokenized_text_lengths, label)
+
+    def get_labels(self):
+        return ['0', '1']
+
+    def _read_corpus_natural_split_yelp(self, fname, label, max_length, block_size):
+        # label: the file contains labels.
+        dropped = 0
+        label_fname = fname.replace('.text', '.labels')
+
+        with open(fname) as fin, open(label_fname) as lfin:
+            for line, label_line in zip(fin, lfin):
+                # pdb.set_trace()
+                split_line_text = line
+                lb = int(label_line)
+                assert lb in [0, 1]   # binary sentiment in yelp dataset.
+
+                if len(split_line_text) < 1:
+                    dropped += 1
+                    continue
+
+                if max_length:
+                    if len(split_line_text.split()) > max_length:
+                        dropped += 1
+                        continue
+
+                # tokenize by tokenizers[0]
+                tokenized_text0 = self.tokenizers[0].convert_tokens_to_ids(self.tokenizers[0].tokenize(split_line_text))
+                tokenized_text0 = self.tokenizers[0].add_special_tokens_single_sentence(tokenized_text0)
+                tokenized_text0_length = len(tokenized_text0)
+                pad_token=self.tokenizers[0].convert_tokens_to_ids([self.tokenizers[0].pad_token])[0]
+                # pad to max_seq_length (block_size)
+                if block_size > tokenized_text0_length:
+                    tokenized_text0 = tokenized_text0 + ([pad_token] * (block_size - tokenized_text0_length)  ) # Pad up to the sequence length.
+                else:
+                    dropped += 1
+                    continue
+                assert len(tokenized_text0) == block_size
+
+                # tokenize by tokenizers[1]
+                tokenized_text1 = self.tokenizers[1].convert_tokens_to_ids(self.tokenizers[1].tokenize(split_line_text))
+                tokenized_text1 = self.tokenizers[1].add_special_tokens_single_sentence(tokenized_text1)
+                tokenized_text1 = [self.bos_token] + tokenized_text1 + [self.eos_token]
+                tokenized_text1_length = len(tokenized_text1)
+                # pad to max_seq_length (block_size)
+                if block_size > tokenized_text1_length:
+                    tokenized_text1 = tokenized_text1 + ([self.pad_token] *  (block_size - tokenized_text1_length) ) # Pad up to the sequence length.
+                else:
+                    dropped += 1
+                    continue
+                assert len(tokenized_text1) == block_size
+
+                self.examples.append([tokenized_text0, tokenized_text0_length, tokenized_text1, tokenized_text1_length, lb])
+
+        return dropped
+
 class ConditionalGenerationDataset(Dataset):
     def __init__(self, dl: list):
         self.x = []

@@ -636,11 +636,12 @@ def train(args):
                     beta = min(1.0, beta + (1. - args.beta_0) / args.beta_warmup)
 
                 if not tuning_all and num_iters >= tuning_all_after_iters:
-                    decoder_unfreeze_modules = [Cond_GPT2Adapter]
+                    decoder_unfreeze_modules = [GPT2Adapter]
                     encoder_unfreeze_modules = [GPT2Adapter]
                     if ada_config.attn_mode == "prefix":
                         decoder_unfreeze_modules.append(Prefix)
                         encoder_unfreeze_modules.append(Prefix)
+                    AdaVAE.encoder = unfreeze_GPT2_adapters(AdaVAE.encoder, encoder_unfreeze_modules)
                     AdaVAE.transformer = unfreeze_GPT2_adapters(AdaVAE.transformer, decoder_unfreeze_modules)
                     if args.finetune_enc or args.finetune_dec:
                         if args.finetune_enc:
@@ -649,8 +650,6 @@ def train(args):
                         if args.finetune_dec:
                             for _, parameter in AdaVAE.transformer.named_parameters():
                                 parameter.requires_grad = True
-                    else:
-                        AdaVAE.encoder = unfreeze_GPT2_adapters(AdaVAE.encoder, encoder_unfreeze_modules)
                     for name, parameter in AdaVAE.named_parameters():
                         print((name, parameter.requires_grad))
                     adavae_params_with_gradients = num_params(AdaVAE)

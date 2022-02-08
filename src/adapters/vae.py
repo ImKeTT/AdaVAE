@@ -251,7 +251,11 @@ class MAM_Attention(Attention):
         value = self.split_heads(value)
         if layer_past is not None:
             past_key, past_value = layer_past[0].transpose(-2, -1), layer_past[1]  # transpose back cf below
+            if len(past_key.size()) != len(key.size()):
+                past_key = self.split_heads(past_key.transpose(-2, -1), k=True)
             key = torch.cat((past_key, key), dim=-1)
+            if len(past_value.size()) != len(value.size()):
+                past_value = self.split_heads(past_value)
             value = torch.cat((past_value, value), dim=-2)
         present = torch.stack((key.transpose(-2, -1), value))  # transpose to have same shapes for stacking
         if prefix_state is not None and "prefix" in self.attn_mode:
@@ -1084,6 +1088,13 @@ class Decoder(GPT2Model):
             past_length = 0
             past = [None] * len(self.h)
         else:
+            # # different latent vectors for each layer
+            # past_split = torch.split(past.unsqueeze(1), self.config.hidden_size, dim=2)
+            # past = list(zip(past_split, past_split))
+            #
+            # # past = past.view(batch_size,len(self.h),-1)
+            # # past = [[past[:,i,:].unsqueeze(-2), past[:,i,:].unsqueeze(-2) ] for i in range(len(self.h))]
+            # past_length = 1  # past[0][0].size(-2)
             past_length = past[0][0].size(-2)
         if position_ids is None:
             device = input_ids.device if input_ids is not None else inputs_embeds.device

@@ -6,23 +6,25 @@
 @email: tuisaac163@gmail.com
 @feature: #Enter features here
 """
-from controlgen.ctrl_gen import CARA, Ctrl_AdaVAE
-import datetime, os, copy, math, time, collections
+
+from ctrl_gen import CARA, Ctrl_AdaVAE
+import datetime, os, copy, math, time, collections, argparse, nltk, json, sys
+sys.path.append('../')
 import numpy as np
 from tqdm import tqdm
 from tensorboardX import SummaryWriter
 import torch
-import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from src.logger import Logger
 from src.adapters.vae import *
 from src.utils import *
 from apex import amp
 from src.adapters.common import AdapterConfig
-from data import ConditionalGenerationDataset
+from src.data import ConditionalGenerationDataset
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, AdamW, get_linear_schedule_with_warmup, Conv1D
 
 
+os.environ["CUDA_VISIBLE_DEVICES"] = '1'
 
 parser = argparse.ArgumentParser()
 
@@ -33,15 +35,15 @@ parser.add_argument("--seed", type=int, default=42)
 # parser.add_argument('--data_type', type=str, default='t1', choices=['t' + str(i) for i in range(9)], help="t: type")
 parser.add_argument('--model_type', type=str, default='cvae', choices=['cvae'])
 parser.add_argument('--iterations', type=int, default=2000 * 3)
-parser.add_argument('--dataset', type=str, default='yelp_data', choices=['yelp_data', 'yahoo_data', 'snli_data', 'penn_data'],
+parser.add_argument('--dataset', type=str, default='yelp_polarity', choices=['yelp_polarity', 'imdb_polarity'],
                     help="Dataset to use for training")
 parser.add_argument('--warmup', type=int, default=1000,
                     help="Amount of iterations to warmup, then decay. (-1 for no warmup and decay)")
 
 ## mode options
-parser.add_argument('--adapter_size', type=int, default=256,
+parser.add_argument('--adapter_size', type=int, default=128,
                     help="Hidden size of GPT2 encoder/decoder adapter")
-parser.add_argument('--latent_size', type=int, default=768,
+parser.add_argument('--latent_size', type=int, default=32,
                     help="Hidden size of latent code")
 parser.add_argument('--encoder_n_layer', type=int, default=6,
                     help="attention layer number of GPT-2 encoder")
@@ -56,7 +58,7 @@ parser.add_argument('--adapter_scalar', type=str, default="1.0",
 parser.add_argument('--ffn_option', type=str, default="parallel_ffn",
                     choices=['sequential', 'parallel_attn', 'parallel_ffn', 'pfeiffer'],
                     help="adapter type option")
-parser.add_argument('--attn_mode', type=str, default="prefix",
+parser.add_argument('--attn_mode', type=str, default="none",
                     choices=['prefix', 'adapter', 'lora', 'none'],
                     help="attention transfer type")
 
@@ -70,7 +72,12 @@ parser.add_argument('--max_length', type=int, default=25,
 parser.add_argument('--switch-time', type=float, default=0,
                     help="Percentage of iterations to spend on short sequence training.")
 parser.add_argument('--data-dir', type=str, default='data')
-parser.add_argument('--out-dir', type=str, default='out')
+parser.add_argument('--out-dir', type=str, default='train_out')
+parser.add_argument('--load_dir', type=str, default='../src/out_freeze_dec')
+parser.add_argument('--experiment', type=str,
+                    default='yelp_data_iter10000_as128_scalar1.0_add_attn_beta1.0_reg-kld_attn_mode-none_'
+                            'ffn_option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-32_zrate-50.0_sd-42_2.7')
+parser.add_argument('--eval_output_dir', type=str, default='eval_out')
 parser.add_argument('--adapter_init', type=str, default='lora',
                     choices=['lora', 'bert', 'lisa', 'other'],
                     help="parameter initialization method for adapter layers.")
@@ -83,24 +90,26 @@ parser.add_argument('--no_gpu', action="store_true")
 
 parser.add_argument('--fp16_opt_level', default='O1', type=str, required=False)
 
-# KL cost annealing, increase beta from beta_0 to 1 in beta_warmup steps
-parser.add_argument('--beta_0', default=1.00, type=float)
+# loss weights
 parser.add_argument('--beta_cls', default=1.00, type=float)
 parser.add_argument('--beta_latent', default=1.00, type=float)
 parser.add_argument('--beta_warmup', type=int, default=1000)
 
-# cyc_vae parameters
-parser.add_argument('--cycle', type=int, default=2000)
+## generation
+parser.add_argument('--top_p', default=5, type=int)
+parser.add_argument('--top_k', default=0.0, type=float)
+parser.add_argument('--temperature', default=1.0, type=float)
 
 ## trigger
 parser.add_argument('--load', action="store_true")
-# parser.add_argument('--label_cond', action="store_true")
-parser.add_argument('--save_all', action="store_true", help="save full parameters of the model")
+parser.add_argument('--do_train', action="store_true")
 parser.add_argument('--add_input', action="store_true")
 parser.add_argument('--add_attn', action="store_true")
 parser.add_argument('--add_softmax', action="store_true")
+parser.add_argument('--finetune_enc', action="store_true")
+parser.add_argument('--finetune_dec', action="store_true")
 parser.add_argument('--attn_proj_vary', action="store_true")
-parser.add_argument('--linear_z_generator', action="store_true")
+parser.add_argument('--save_all', action="store_true", help="save full parameters of the model")
 
 
 
@@ -124,13 +133,178 @@ def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, cond_
     # loss.backward()
     # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # max_grad_norm=1.0
     optimizer.step()
-    # output.append((loss.item(), ce_loss.mean().item(), reg_loss.item()))
 
     return loss_dict, acc_dict
 
-def train(args):
-    now = datetime.datetime.now()
 
+def evaluate(args, model, tokenizer, logging, eval_dataloader, eval_output_dir, iter, device):
+    model.training = False
+    os.makedirs(eval_output_dir, exist_ok=True)
+    # Eval!
+    logging.info("***** Running evaluation *****")
+    logging.info("  Num examples = %d" % len(eval_dataloader))
+    logging.info("  Batch size = %d" % args.eval_batch_size)
+    logging.info("  Num steps = %d" % (len(eval_dataloader) // args.eval_batch_size))
+
+    outputs = {
+        'sampled_cond_labels': None,
+        'cond_labels': None,
+        'tgt_seq_ids': None,
+        'generated': None,
+        'at_generated': None,
+        'cg_generated': None,
+        'pred_cls': None,
+        'pred_ge_cls': None,
+        'pred_at_cls': None,
+        'pred_cg_cls': None,
+    }
+
+    for bi, batch in enumerate(tqdm(eval_dataloader, desc="#Sentences", disable=args.local_rank not in [-1, 0])):
+
+        # Data
+        # input_seq_ids, tgt_seq_ids, tokenized_text_lengths, cond_labels = batch
+        # max_len_values, _ = tokenized_text_lengths.max(0)
+        # input_seq_ids = input_seq_ids[:, :max_len_values[0]]
+        # tgt_seq_ids = tgt_seq_ids[:, :max_len_values[1]]
+        # input_seq_ids = input_seq_ids.to(args.device)
+        # tgt_seq_ids = tgt_seq_ids.to(args.device)
+        # cond_labels = cond_labels.to(args.device)
+        # input_mask = torch.where(
+        #     torch.arange(max_len_values[0].item()).unsqueeze(0).repeat(input_seq_ids.size(0), 1).type_as(
+        #         tokenized_text_lengths).to(args.device)
+        #     < tokenized_text_lengths[:, 0].unsqueeze(1).to(args.device), torch.ones_like(input_seq_ids),
+        #     torch.zeros_like(input_seq_ids))
+
+        ## Data
+        tgt_seq_ids, input_seq_ids, input_mask = tokenize(batch['x'], tokenizer, device, args)
+        cond_labels = torch.tensor(batch['y']).to(device)
+
+        # Model
+        with torch.no_grad():
+            result = model(input_ids=input_seq_ids, tgt_seq_ids=tgt_seq_ids, cond_labels=cond_labels,
+                               attention_mask=input_mask)
+        if bi == 0:
+            for key in outputs.keys():
+                outputs[key] = result[key].cpu().tolist()
+        else:
+            for key in outputs.keys():
+                outputs[key].extend(result[key].cpu().tolist())
+
+        # compute accuracies and store in results
+    acc = np.mean(np.array(np.array(outputs['pred_cls']) == np.array(outputs['cond_labels']), dtype=np.float))
+    acc_ge = np.mean(np.array(np.array(outputs['pred_ge_cls']) == np.array(outputs['cond_labels']), dtype=np.float))
+    acc_at = np.mean(
+        np.array(np.array(outputs['pred_at_cls']) == np.array(outputs['sampled_cond_labels']), dtype=np.float))
+    acc_cg = np.mean(
+        np.array(np.array(outputs['pred_cg_cls']) == np.array(outputs['sampled_cond_labels']), dtype=np.float))
+    metrics = {'acc': acc, 'acc_ge': acc_ge, 'acc_at': acc_at, 'acc_cg': acc_cg}
+
+    # dump generated outputs to file.
+    json.dump(outputs, open(
+        os.path.join(eval_output_dir, "outputs_{}.json".format(iter) if iter is not None else "outputs.json"), 'w'))
+
+    # compute BLEU
+    bos_token_id = tokenizer.encode('<BOS>')[0]
+    eos_token_id = tokenizer.encode('<EOS>')[0]
+    pad_token_id = tokenizer.encode('<PAD>')[0]
+
+    generated_ids = []
+    generated_text = []
+    for g in outputs['generated']:
+        if g and g[0] in [eos_token_id, bos_token_id]:
+            g = g[1:]
+        if g and g[0] in [eos_token_id, bos_token_id]:
+            g = g[1:]
+        g = g[:g.index(eos_token_id)] if eos_token_id in g else g
+        g = g[:g.index(pad_token_id)] if pad_token_id in g else g
+        g_text = tokenizer.decode(g, clean_up_tokenization_spaces=True)
+        generated_ids.append(g)
+        generated_text.append(g_text)
+
+    tgt_seq_ids = []
+    tgt_seq_text = []
+    for g in outputs['tgt_seq_ids']:
+        if g and g[0] in [eos_token_id, bos_token_id]:
+            g = g[1:]
+        if g and g[0] in [eos_token_id, bos_token_id]:
+            g = g[1:]
+        g = g[:g.index(eos_token_id)] if eos_token_id in g else g
+        g = g[:g.index(pad_token_id)] if pad_token_id in g else g
+        g_text = tokenizer.decode(g, clean_up_tokenization_spaces=True)
+        tgt_seq_ids.append(g)
+        tgt_seq_text.append(g_text)
+
+    at_generated_ids = []
+    at_generated_text = []
+    for g in outputs['at_generated']:
+        if g and g[0] in [eos_token_id, bos_token_id]:
+            g = g[1:]
+        if g and g[0] in [eos_token_id, bos_token_id]:
+            g = g[1:]
+        g = g[:g.index(eos_token_id)] if eos_token_id in g else g
+        g = g[:g.index(pad_token_id)] if pad_token_id in g else g
+        g_text = tokenizer.decode(g, clean_up_tokenization_spaces=True)
+        at_generated_ids.append(g)
+        at_generated_text.append(g_text)
+
+    cg_generated_ids = []
+    cg_generated_text = []
+    for g in outputs['cg_generated']:
+        if g and g[0] in [eos_token_id, bos_token_id]:
+            g = g[1:]
+        if g and g[0] in [eos_token_id, bos_token_id]:
+            g = g[1:]
+        g = g[:g.index(eos_token_id)] if eos_token_id in g else g
+        g = g[:g.index(pad_token_id)] if pad_token_id in g else g
+        g_text = tokenizer.decode(g, clean_up_tokenization_spaces=True)
+        cg_generated_ids.append(g)
+        cg_generated_text.append(g_text)
+
+    f = open(
+        os.path.join(eval_output_dir, "reconstruction{}.txt".format(('_' + str(iter)) if iter is not None else '')),
+        'w')
+    f.write('\n'.join([g + '\n' + t for g, t in zip(generated_text, tgt_seq_text)]))
+    fat = open(os.path.join(eval_output_dir,
+                            "attribute_transfer{}.txt".format(('_' + str(iter)) if iter is not None else '')), 'w')
+    fat.write('\n'.join([g + '\n' + t for g, t in zip(at_generated_text, tgt_seq_text)]))
+    fcg = open(os.path.join(eval_output_dir,
+                            "conditional_generation{}.txt".format(('_' + str(iter)) if iter is not None else '')),
+               'w')
+    fcg.write('\n'.join(cg_generated_text))
+
+    rec_bleu = nltk.translate.bleu_score.corpus_bleu(list_of_references=[[nltk.word_tokenize(t)] for t in tgt_seq_text],
+                                                     hypotheses=[nltk.word_tokenize(g) for g in generated_text])
+
+    at_bleu = nltk.translate.bleu_score.corpus_bleu(list_of_references=[[nltk.word_tokenize(t)] for t in tgt_seq_text],
+                                                    hypotheses=[nltk.word_tokenize(g) for g in at_generated_text])
+
+    cg_generated_text_subset = cg_generated_text[:500]  # use a subset, otherwise it takes a long time to compute.
+    cg_bleu = nltk.translate.bleu_score.corpus_bleu(
+        list_of_references=[[nltk.word_tokenize(t) for t in tgt_seq_text] for _ in
+                            range(len(cg_generated_text_subset))],
+        hypotheses=[nltk.word_tokenize(g) for g in cg_generated_text_subset])
+
+    cg_self_bleu = nltk.translate.bleu_score.corpus_bleu(list_of_references=[
+        [nltk.word_tokenize(t) for t in cg_generated_text_subset[:i] + cg_generated_text_subset[i + 1:]]
+        for i in range(len(cg_generated_text_subset))],
+                                                         hypotheses=[nltk.word_tokenize(g) for g in
+                                                                     cg_generated_text_subset])
+
+    metrics['rec_bleu'] = rec_bleu
+    metrics['at_bleu'] = at_bleu
+    metrics['cg_bleu'] = cg_bleu
+    metrics['cg_self_bleu'] = cg_self_bleu
+
+    output_eval_file = os.path.join(eval_output_dir, "eval_results.txt")
+    writer = open(output_eval_file, "w")
+    logging.info("***** Eval results, global steps*****")
+    for key, value in metrics.items():
+        logging.info("  %s = %s" % (key, str(value)))
+        writer.write("%s = %s\n"  % (key, str(value)))
+
+    return metrics
+
+def main(args):
     # GPU
     if not torch.cuda.is_available(): args.no_gpu = True
     gpu = not args.no_gpu
@@ -173,25 +347,28 @@ def train(args):
 
     AdaVae_encoder = Encoder(config, ada_config)
     AdaVae_decoder = Decoder(config, ada_config, args.add_input, args.add_attn, attn_proj_vary=False)
-    AdaVae_average_attn = AverageSelfAttention(config.n_embd, ada_config)
+    # AdaVae_average_attn = AverageSelfAttention(config.n_embd, ada_config)
+    endoftext = tokenizer.convert_tokens_to_ids("<|endoftext|>")
 
 
-    model = Ctrl_AdaVAE(args, AdaVae_encoder, AdaVae_decoder, AdaVae_average_attn, config, ada_config, add_attn=args.add_attn)
+    model = Ctrl_AdaVAE(args, AdaVae_encoder, AdaVae_decoder, endoftext, config, ada_config, add_attn=args.add_attn)
 
     ## load pre-trained weights
-    init_para_frompretrained(model.transformer, gpt2_model.transformer, share_para=False)
-    init_para_frompretrained(model.encoder, gpt2_model.transformer, share_para=False)
+    init_para_frompretrained(model.transformer, gpt2_model.transformer, share_para=True)
+    init_para_frompretrained(model.encoder, gpt2_model.transformer, share_para=True)
     model.lm_head.weight = gpt2_model.lm_head.weight
 
     ## load ckpt
     print('Loading model weights...')
     experiment = args.experiment
-    save_folder = os.path.join(args.out_dir, experiment)
+    load_folder = os.path.join(args.load_dir, experiment)
+    save_folder = os.path.join(args.out_dir, args.dataset)
+    os.makedirs(save_folder, exist_ok=True)
     t_writer = SummaryWriter(os.path.join(save_folder, 'train'), flush_secs=5)
     v_writer = SummaryWriter(os.path.join(save_folder, 'val'), flush_secs=5)
-    logging_file = ""
+    logging_file = f"{args.dataset}_CtrlGen.log"
     logging = Logger(os.path.join(save_folder, logging_file))
-    state = torch.load(os.path.join(save_folder, 'model_latest.pt'))  # , map_location='cpu' model_latest.pt
+    state = torch.load(os.path.join(load_folder, 'model_latest.pt'))  # , map_location='cpu' model_latest.pt
     if 'module' in list(state.keys())[0]:  # model_path is data parallel model with attr 'module'
         state_copy = copy.copy(state)
         keys = state_copy.keys()
@@ -214,17 +391,18 @@ def train(args):
 
     # fix pre-trained parameters before certain iterations
     args.warmup = args.beta_warmup = int(args.iterations / 6)
-    args.cycle = int(args.iterations / 3)
     for name, parameter in model.named_parameters():
         new_pars = ['c_z', 'attention_weights', 'mean', 'logvar', 'input_proj', 'attn_proj', 'Nu_fc1', 'Nu_fc2',
                     'lm_head_rep']
-        if args.reg_loss == "adversarial":
-            new_pars.append('discriminator')
+        pars_ctrl = ['label_embedding', 'latent_generator', 'linear', 'latent_classifier', 'latent_discriminator',
+                     'conv1', 'classifier']
+        new_pars.extend(pars_ctrl)
+
 
         if not any([True if n in name else False for n in new_pars]):
             parameter.requires_grad = False
 
-    decoder_unfreeze_modules = [Cond_GPT2Adapter]
+    decoder_unfreeze_modules = [GPT2Adapter]
     encoder_unfreeze_modules = [GPT2Adapter]
     if ada_config.attn_mode == "prefix":
         pass
@@ -254,7 +432,7 @@ def train(args):
     # Batch and sequence length schedule
     assert len(args.batch_sizes) == len(args.seq_lens)
     batch_schedule = list(zip(map(int, args.batch_sizes), map(int, args.seq_lens)))
-    assert len(batch_schedule) <= 2, 'Currently not supporting multiple schedule'
+    assert len(batch_schedule) <= 2, 'Currently not supporting multiple schedules'
     args.switch_time = 0
     cur_b_schedule = len(batch_schedule) - 1 if args.switch_time == 0 else 0
     logging.info('Batch schedule')
@@ -290,8 +468,7 @@ def train(args):
     ## load ckpt
     if args.load:
         logging.info('Loading model weights...')
-        state = torch.load(os.path.join(save_folder, 'ckpt/model',
-                                        'model_0000048.pt'))  # , map_location='cpu' model_latest.pt
+        state = torch.load(os.path.join(save_folder, 'model_latest.pt'))  # , map_location='cpu' model_latest.pt
         if 'module' in list(state.keys())[0]:  # model_path is data parallel model with attr 'module'
             state_copy = copy.copy(state)
             keys = state_copy.keys()
@@ -310,15 +487,12 @@ def train(args):
 
     logging.info('Done.')
 
-    logging.info('Begin training iterations')
     logging.info("Begin training iterations")
     max_val_batches = 200  # max num. of val batches
     logging.info("Total iteration: %d" % args.iterations)
     e = 0  # number of epoch
     num_iters = 0
     optimizer.zero_grad()
-    beta = args.beta_0
-    endoftext = tokenizer.convert_tokens_to_ids("<|endoftext|>")
 
     def val_step(val_loader):
         model.eval()
@@ -411,128 +585,114 @@ def train(args):
         logging.info('val acc_gen    : %.4f' % np.mean(val_acc_gen))
         logging.info('val acc_cls    : %.4f' % np.mean(val_acc_cls))
 
+        evaluate(args, model, tokenizer, logging, val_loader,
+                 os.path.join(args.eval_output_dir, args.dataset), num_iters, device)
 
-        # bsz = 5
-        # sents, _ = sample_sequence(model, args.max_length,
-        #                            batch_size=bsz, top_k=100, top_p=0.95,
-        #                            device=device, sample=True, eos_token=endoftext)
-        # # Sample sentences
-        # logging.info("-" * 50)
-        # sents = sents.tolist()
-        # for i in range(len(sents)):
-        #     sent = sents[i]
-        #     sent = sent[sent.index(endoftext) + 1:]
-        #
-        #     if endoftext in sent:
-        #         idx = sent.index(endoftext)
-        #         sent = sent[:idx]
-        #
-        #     sent = tokenizer.decode(sent).strip()
-        #     logging.info(sent)
-
+        model.training = True
         model.train()
 
-    while num_iters < args.iterations:
-        # Run epoch
-        st = time.time()
+    if args.do_train:
+        while num_iters < args.iterations:
+            # Run epoch
+            st = time.time()
 
-        # Training
-        print('Training loop. Batches:', len(train_loader))
-        logging.info('\n----------------------------------------------------------------------')
-        logging.info("Training loop.       Batches: %d" % len(train_loader))
+            # Training
+            print('Training loop. Batches:', len(train_loader))
+            logging.info('\n----------------------------------------------------------------------')
+            logging.info("Training loop.       Batches: %d" % len(train_loader))
 
-        # train_iter = iter(train_loader); x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask = next(train_iter)
-        with tqdm(total=len(train_loader)) as pbar:
-            for i, data_dict in enumerate(train_loader):
-                x_ids, input_ids, attention_mask = tokenize(data_dict['x'], tokenizer, device, args)
-                cond_labels = torch.tensor(data_dict['y']).to(device)
+            # train_iter = iter(train_loader); x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask = next(train_iter)
+            with tqdm(total=len(train_loader)) as pbar:
+                for i, data_dict in enumerate(train_loader):
+                    x_ids, input_ids, attention_mask = tokenize(data_dict['x'], tokenizer, device, args)
+                    cond_labels = torch.tensor(data_dict['y']).to(device)
 
-                if num_iters % args.cycle >= args.cycle - args.beta_warmup:
-                    beta = min(1.0, beta + (1. - args.beta_0) / args.beta_warmup)
+                    if args.warmup != -1:
+                        scheduler.step()
 
-                if args.warmup != -1:
-                    scheduler.step()
+                    loss_dict, acc_dict = train_step(device, model, optimizer, x_ids, input_ids, attention_mask, cond_labels)
 
-                loss_dict, acc_dict = train_step(device, model, optimizer, x_ids, input_ids, attention_mask, cond_labels)
+                    lr = scheduler.get_last_lr()[0]
 
-                lr = scheduler.get_last_lr()[0]
+                    loss = loss_dict['loss'].mean().item()
+                    ce_loss = loss_dict['loss_rec'].mean().item()
+                    loss_enc = loss_dict['loss_encoder'].mean().item()
+                    loss_lsc = loss_dict['loss_lsc'].mean().item()
+                    loss_lsd = loss_dict['loss_lsd'].mean().item()
+                    loss_lsg = loss_dict['loss_lsg'].mean().item()
+                    loss_cls = loss_dict['loss_cls'].mean().item()
+                    acc_enc_z_dis = acc_dict['acc_encode_z_dis'].mean().item()
+                    acc_gen_z_dis = acc_dict['acc_gen_z_dis'].mean().item()
+                    acc_enc_z_cls = acc_dict['acc_encode_z_cls'].mean().item()
+                    acc_cls = acc_dict['acc_cls'].mean().item()
 
-                loss = loss_dict['loss'].mean().item()
-                ce_loss = loss_dict['loss_rec'].mean().item()
-                loss_enc = loss_dict['loss_enc'].mean().item()
-                loss_lsc = loss_dict['loss_lsc'].mean().item()
-                loss_lsd = loss_dict['loss_lsd'].mean().item()
-                loss_lsg = loss_dict['loss_lsg'].mean().item()
-                loss_cls = loss_dict['loss_cls'].mean().item()
-                acc_enc_z_dis = acc_dict['acc_encode_z_dis'].mean().item()
-                acc_gen_z_dis = acc_dict['acc_gen_z_dis'].mean().item()
-                acc_enc_z_cls = acc_dict['acc_encode_z_cls'].mean().item()
-                acc_cls = acc_dict['acc_cls'].mean().item()
+                    # Log to Tensorboard
+                    t_writer.add_scalar('loss', loss, num_iters)
+                    t_writer.add_scalar('loss_rec', ce_loss, num_iters)
+                    t_writer.add_scalar('ppl', math.exp(min(ce_loss, 10)), num_iters)
+                    t_writer.add_scalar('loss_enc', loss_enc, num_iters)
+                    t_writer.add_scalar('loss_lsc', loss_lsc, num_iters)
+                    t_writer.add_scalar('loss_lsd', loss_lsd, num_iters)
+                    t_writer.add_scalar('loss_lsg', loss_lsg, num_iters)
+                    t_writer.add_scalar('loss_cls', loss_cls, num_iters)
+                    t_writer.add_scalar('acc_enc_z_dis', acc_enc_z_dis, num_iters)
+                    t_writer.add_scalar('acc_gen_z_dis', acc_gen_z_dis, num_iters)
+                    t_writer.add_scalar('acc_enc_z_cls', acc_enc_z_cls, num_iters)
+                    t_writer.add_scalar('acc_cls', acc_cls, num_iters)
+                    t_writer.add_scalar('lr', lr, num_iters)
+                    t_writer.add_scalar('iter_time', time.time() - st, num_iters)
 
-                # Log to Tensorboard
-                t_writer.add_scalar('loss', loss, num_iters)
-                t_writer.add_scalar('loss_rec', ce_loss, num_iters)
-                t_writer.add_scalar('ppl', math.exp(ce_loss, 10), num_iters)
-                t_writer.add_scalar('loss_enc', loss_enc, num_iters)
-                t_writer.add_scalar('loss_lsc', loss_lsc, num_iters)
-                t_writer.add_scalar('loss_lsd', loss_lsd, num_iters)
-                t_writer.add_scalar('loss_lsg', loss_lsg, num_iters)
-                t_writer.add_scalar('loss_cls', loss_cls, num_iters)
-                t_writer.add_scalar('acc_enc_z_dis', acc_enc_z_dis, num_iters)
-                t_writer.add_scalar('acc_gen_z_dis', acc_gen_z_dis, num_iters)
-                t_writer.add_scalar('acc_enc_z_cls', acc_enc_z_cls, num_iters)
-                t_writer.add_scalar('acc_cls', acc_cls, num_iters)
-                t_writer.add_scalar('lr', lr, num_iters)
-                t_writer.add_scalar('iter_time', time.time() - st, num_iters)
+                    st = time.time()
+                    end = num_iters >= args.iterations
 
-                st = time.time()
-                end = num_iters >= args.iterations
+                    if end:
+                        break
+                    num_iters += 1
+                    pbar.update(1)
 
-                if end:
-                    break
-                num_iters += 1
-                pbar.update(1)
+                    if num_iters % 500 == 0:
+                        logging.info("test set")
+                        val_step(test_loader)
+                        logging.info("validation set")
+                        val_step(val_loader)
 
-                if num_iters % args.cycle == 0:
-                    beta = args.beta_0
-                    logging.info('KL annealing restart')
+                    if (num_iters + 1) % 3000 == 0:
+                        logging.info('Saving model...')
+                        logging.info("Iteration completed: %d, remained %d" % (num_iters, args.iterations - num_iters))
+                        logging.info("Saving model...")
+                        logging.info('\n------------------------------------------------------')
 
-                if num_iters % 500 == 0:
-                    logging.info("test set")
-                    val_step(test_loader)
-                    logging.info("validation set")
-                    val_step(val_loader)
+                        if args.save_all:
+                            save_orderdict = model.state_dict()
+                        else:
+                            save_orderdict = collections.OrderedDict()
+                            for name, parameter in model.named_parameters():
+                                if parameter.requires_grad:
+                                    save_orderdict[name] = parameter
+                        torch.save(save_orderdict,
+                                   os.path.join(save_folder, 'ckpt/model',
+                                                'model_' + '{:07d}'.format(num_iters) + '.pt'))
+            if not end:
+                e += 1
+                logging.info("Training loop. The ith epoch completed: %d" % e)
 
-                if (num_iters + 1) % 3000 == 0:
-                    logging.info('Saving model...')
-                    logging.info("Iteration completed: %d, remained %d" % (num_iters, args.iterations - num_iters))
-                    logging.info("Saving model...")
-                    logging.info('\n------------------------------------------------------')
+        if args.save_all:
+            save_orderdict = model.state_dict()
+        else:
+            save_orderdict = collections.OrderedDict()
+            for name, parameter in model.named_parameters():
+                if parameter.requires_grad:
+                    save_orderdict[name] = parameter
+        torch.save(save_orderdict, os.path.join(save_folder, 'model_latest.pt'))
+        logging.info('Training complete.')
 
-                    if args.save_all:
-                        save_orderdict = model.state_dict()
-                    else:
-                        save_orderdict = collections.OrderedDict()
-                        for name, parameter in model.named_parameters():
-                            if parameter.requires_grad:
-                                save_orderdict[name] = parameter
-                    torch.save(save_orderdict,
-                               os.path.join(save_folder, 'ckpt/model',
-                                            'model_' + '{:07d}'.format(num_iters) + '.pt'))
-        if not end:
-            e += 1
-            logging.info("Training loop. The ith epoch completed: %d" % e)
-
-    if args.save_all:
-        save_orderdict = model.state_dict()
+    ## evaluate: generate; evaluate...
     else:
-        save_orderdict = collections.OrderedDict()
-        for name, parameter in model.named_parameters():
-            if parameter.requires_grad:
-                save_orderdict[name] = parameter
-    torch.save(save_orderdict, os.path.join(save_folder, 'model_latest.pt'))
-    logging.info('Training complete.')
-
+        model.eval()
+        evaluate(args, model, tokenizer, logging, val_loader,
+                 os.path.join(args.eval_output_dir, args.dataset), 0, device)
 
 if __name__=="__main__":
-    pass
+    args = parser.parse_args()
+    args = parser.parse_args('--batch-sizes 100 --max_length 32 --add_attn --do_train --adapter_size 128 --latent_size 32'.split())
+    main(args)

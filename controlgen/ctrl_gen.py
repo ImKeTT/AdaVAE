@@ -4,14 +4,9 @@
 based on Optimus (https://github.com/ChunyuanLI/Optimus/blob/master/code/examples/big_ae/modules/ctrl_gen.py)
 """
 
-import math
 import torch
 import torch.nn as nn
-from .utils import log_sum_exp
-import pdb
 import sys
-sys.path.append('../../')
-from pytorch_transformers.modeling_bert import BertEmbeddings
 import torch.nn.functional as F
 
 
@@ -351,13 +346,15 @@ class CARA(nn.Module):
 
 
 class Ctrl_AdaVAE(nn.Module):
-    def __init__(self, args, encoder, decoder, average_attn, config, AdapterConfig, add_input=False, add_attn=False, add_softmax=False,
-                 attn_proj_vary=False, reg_loss="kld"):
+    def __init__(self, args, encoder, decoder, eos_token,
+                 config, AdapterConfig, add_input=False,
+                 add_attn=False, add_softmax=False,
+                 attn_proj_vary=False):
         super(Ctrl_AdaVAE, self).__init__()
-        self.transformer = decoder(config, AdapterConfig, add_input, add_attn,
-                                   attn_proj_vary)
+        self.transformer = decoder
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        self.encoder = encoder(config, AdapterConfig)
+        self.encoder = encoder
+        self.eos_token = eos_token
 
         self.nz = AdapterConfig.latent_size
 
@@ -373,10 +370,9 @@ class Ctrl_AdaVAE(nn.Module):
         # self.prior = torch.distributions.normal.Normal(loc, scale)
 
         self.label_embedding = nn.Embedding(AdapterConfig.class_num, self.nz, padding_idx=0)    # use the same size as latent_z so as to use the same decoder.linear()
-        if args.linear_z_generator:
-            self.latent_generator = nn.Linear(self.nz, self.nz)
-        else:
-            self.latent_generator = average_attn(config.n_embd, AdapterConfig)
+        self.latent_generator = nn.Linear(self.nz, self.nz)
+        self.linear = nn.Linear(self.nz, self.nz)
+        # self.latent2mem = nn.Linear(AdapterConfig.latent_size, config.hidden_size, bias=False)
         self.latent_classifier = nn.Linear(self.nz, AdapterConfig.class_num if AdapterConfig.class_num > 2 else 1)
         self.latent_discriminator = nn.Linear(self.nz, 1)
 
@@ -395,9 +391,9 @@ class Ctrl_AdaVAE(nn.Module):
         self.add_attn = add_attn
         self.add_softmax = add_softmax
         self.attn_proj_vary = attn_proj_vary
-        self.reg_loss = reg_loss
         self.AdapterConfig = AdapterConfig
         self.args = args
+        self.n_head = config.n_head
 
     def forward(self,
         input_ids=None,
@@ -423,10 +419,8 @@ class Ctrl_AdaVAE(nn.Module):
         prior_mean, prior_logvar = prior_mean.to(posterior_mean.dtype), prior_logvar.to(posterior_logvar.dtype)
 
         latent_z = posterior_mean
-        if self.args.linear_z_generator:
-            gen_z = self.latent_generator(random_noise)
-        else:
-            gen_z = self.latent_generator(random_noise, attention_mask.squeeze(1).squeeze(1))
+
+        gen_z = self.latent_generator(random_noise)
 
         #################### Latent discriminator for sampling from a simple distribution ####################
         prob_encode_z_dis = self.latent_discriminator(latent_z).squeeze(1).float()  # (B)
@@ -455,169 +449,204 @@ class Ctrl_AdaVAE(nn.Module):
             # Train encoder adversarially
             loss_encoder = 1 - self.CrossEntropyLoss(prob_encode_z_cls, cond_labels)
 
-            #################### Recontruction loss with latent z and label emb ####################
-            # Embed labels
-            label_emb = self.label_embedding(cond_labels)  # (B, hidden_size)
-            # past_label = self.decoder.linear(label_emb)    # (B, n_blocks * hidden_size)  # todo: use the same linear layer for latent_z for now.
-            if self.args.label_size <= 2:
-                sampled_cond_labels = 1 - cond_labels
-            else:
-                raise NotImplementedError
-            sampled_label_emb = self.label_embedding(sampled_cond_labels)  # (B, hidden_size)
-            # past_sampled_label = self.decoder.linear(sampled_label_emb)    # (B, n_blocks * hidden_size)  # todo: use the same linear layer for latent_z for now.
-            past_sampled_label = sampled_label_emb
+        #################### Recontruction loss with latent z and label emb ####################
+        # Embed labels
+        label_emb = self.label_embedding(cond_labels)  # (B, hidden_size)
+        # past_label = self.decoder.linear(label_emb)    # (B, n_blocks * hidden_size)  # todo: use the same linear layer for latent_z for now.
+        if self.args.label_size <= 2:
+            sampled_cond_labels = 1 - cond_labels
+        else:
+            raise NotImplementedError
+        sampled_label_emb = self.label_embedding(sampled_cond_labels)  # (B, hidden_size)
+        # past_sampled_label = self.decoder.linear(sampled_label_emb)    # (B, n_blocks * hidden_size)  # todo: use the same linear layer for latent_z for now.
+        past_sampled_label = sampled_label_emb
 
-            # Generate based on encoded z and gt labels. (reconstruction)
-            # past_z = self.decoder.linear(latent_z)    # (B, n_blocks * hidden_size)
-            past_z = latent_z
-            # gen_past_z = self.decoder.linear(gen_z)    # (B, n_blocks * hidden_size)
-            gen_past_z = gen_z  # (B, n_blocks * hidden_size)
+        # Generate based on encoded z and gt labels. (reconstruction)
+        # past_z = self.decoder.linear(latent_z)    # (B, n_blocks * hidden_size)
+        past_z = latent_z
+        # gen_past_z = self.decoder.linear(gen_z)    # (B, n_blocks * hidden_size)
+        gen_past_z = gen_z  # (B, n_blocks * hidden_size)
 
-            # past = torch.cat([past_z.unsqueeze(1), past_label.unsqueeze(1)], dim=1) # (B, 2, n_blocks * hidden_size)
+        # past = torch.cat([past_z.unsqueeze(1), past_label.unsqueeze(1)], dim=1) # (B, 2, n_blocks * hidden_size)
 
-            past = latent_z + label_emb  # (B, n_blocks * hidden_size)
 
-            outputs = self.transformer(input_ids,
-                                       past=past,
-                                       attention_mask=attention_mask,
-                                       token_type_ids=token_type_ids,
-                                       position_ids=position_ids,
-                                       head_mask=head_mask,
-                                       inputs_embeds=inputs_embeds,
-                                       representations=latent_z)
-            hidden_states = outputs[0]
-            lm_logits = self.lm_head(hidden_states)
-            num_logits = lm_logits.size(-1)
-            loss_rec = self.logitsCrossEntropyLoss(lm_logits.view(-1, num_logits), tgt_seq_ids.view(-1))
+        past = latent_z + label_emb  # (B, n_blocks * hidden_size)
+        # past = [self.latent2mem(past.unsqueeze(-2)),
+        #         self.latent2mem(past.unsqueeze(-2))]  # query, key
+        # past = [past] * len(self.transformer.h)
 
-            ####################  Train a classifier in the observation space ####################
-            tgt_emb = self.gpt_embeddings(tgt_seq_ids)
-            tgt_encode = self.conv1(tgt_emb.transpose(1, 2))  # (B, dim_h, seq_len)
-            tgt_encode = torch.mean(tgt_encode, dim=-1)  # (B, dim_h)
-            prob_cls = self.classifier(tgt_encode)  # (B, n_labels)
-            if self.args.label_size <= 2:
-                prob_cls = prob_cls.squeeze(1)
-                loss_cls = self.BCEWithLogitsLoss(prob_cls, cond_labels.float())
-                pred_cls = (prob_cls >= 0).to(dtype=torch.long)
-            else:
-                loss_cls = self.CrossEntropyLoss(prob_cls, cond_labels)
-                pred_cls = torch.argmax(prob_cls, dim=-1)
-            acc_cls = (pred_cls == cond_labels).float()
+        outputs = self.transformer(input_ids,
+                                   past=None,
+                                   attention_mask=attention_mask,
+                                   token_type_ids=token_type_ids,
+                                   position_ids=position_ids,
+                                   head_mask=head_mask,
+                                   inputs_embeds=inputs_embeds,
+                                   representations=past)
+        hidden_states = outputs[0]
+        lm_logits = self.lm_head(hidden_states)
+        num_logits = lm_logits.size(-1)
+        loss_rec = self.logitsCrossEntropyLoss(lm_logits.view(-1, num_logits), tgt_seq_ids.view(-1))
+
+        ####################  Train a classifier in the observation space ####################
+        tgt_emb = self.gpt_embeddings(tgt_seq_ids)
+        tgt_encode = self.conv1(tgt_emb.transpose(1, 2))  # (B, dim_h, seq_len)
+        tgt_encode = torch.mean(tgt_encode, dim=-1)  # (B, dim_h)
+        prob_cls = self.classifier(tgt_encode)  # (B, n_labels)
+        if self.args.label_size <= 2:
+            prob_cls = prob_cls.squeeze(1)
+            loss_cls = self.BCEWithLogitsLoss(prob_cls, cond_labels.float())
+            pred_cls = (prob_cls >= 0).to(dtype=torch.long)
+        else:
+            loss_cls = self.CrossEntropyLoss(prob_cls, cond_labels)
+            pred_cls = torch.argmax(prob_cls, dim=-1)
+        acc_cls = (pred_cls == cond_labels).float()
+
+        # Generate based on encoded z and sampled labels (attribute transfer)
+        # at_past = torch.cat([past_z.unsqueeze(1), past_sampled_label.unsqueeze(1)], dim=1) # (B, 2, n_blocks * hidden_size)
+        # at_generated_soft = self.sample_sequence_conditional_batch_soft(past=at_past, context=self.bos_token_id_list) # (B, seq_len, vocab_size)
+
+        # # Classifier on attribute transfer generated sentences. Train Generator on attribute transfer.
+        # at_soft_emb = torch.matmul(at_generated_soft, self.gpt_embeddings.weight)
+        # at_soft_encode = self.conv1(at_soft_emb.transpose(1, 2))    # (B, dim_h, seq_len)
+        # at_soft_encode = torch.mean(at_soft_encode, dim=-1)   # (B, dim_h)
+        # prob_at_soft_cls = self.classifier(at_soft_encode)    # (B, 1)
+        # if self.args.label_size <= 2:
+        #     prob_at_soft_cls = prob_at_soft_cls.squeeze(1)
+        #     loss_at_soft_cls = self.BCEWithLogitsLoss(prob_at_soft_cls, sampled_cond_labels.float())
+        #     pred_at_soft_cls = (prob_at_soft_cls >= 0).to(torch.long)
+        # else:
+        #     loss_at_soft_cls = self.CrossEntropyLoss(prob_at_soft_cls, sampled_cond_labels)
+        #     pred_at_soft_cls = torch.argmax(prob_at_soft_cls, dim=-1)
+        # acc_at_soft_cls = (pred_at_soft_cls == sampled_cond_labels).float()
+
+        # Loss
+        loss_latent_space = (loss_encoder + loss_lsc) + (
+                    loss_lsd + loss_lsg) + self.args.beta_cls * loss_cls  # + loss_at_soft_cls
+        loss = loss_rec + self.args.beta_latent * loss_latent_space
+
+        if not self.training:
+            # Generate based on encoded z and gt labels
+            generated = self.sample_sequence_conditional_batch(representations=past, context=self.bos_token_id_list)
 
             # Generate based on encoded z and sampled labels (attribute transfer)
             # at_past = torch.cat([past_z.unsqueeze(1), past_sampled_label.unsqueeze(1)], dim=1) # (B, 2, n_blocks * hidden_size)
-            # at_generated_soft = self.sample_sequence_conditional_batch_soft(past=at_past, context=self.bos_token_id_list) # (B, seq_len, vocab_size)
+            at_past = past_z + past_sampled_label  # (B, n_blocks * hidden_size)
+            # at_past = [at_past.unsqueeze(-2), at_past.unsqueeze(-2)]  # query, key
+            # at_past = [at_past] * len(self.transformer.h)
+            at_generated = self.sample_sequence_conditional_batch(representations=at_past,
+                                                                  context=self.bos_token_id_list)  # (B, seq_len)
 
-            # # Classifier on attribute transfer generated sentences. Train Generator on attribute transfer.
-            # at_soft_emb = torch.matmul(at_generated_soft, self.gpt_embeddings.weight)
-            # at_soft_encode = self.conv1(at_soft_emb.transpose(1, 2))    # (B, dim_h, seq_len)
-            # at_soft_encode = torch.mean(at_soft_encode, dim=-1)   # (B, dim_h)
-            # prob_at_soft_cls = self.classifier(at_soft_encode)    # (B, 1)
-            # if self.args.label_size <= 2:
-            #     prob_at_soft_cls = prob_at_soft_cls.squeeze(1)
-            #     loss_at_soft_cls = self.BCEWithLogitsLoss(prob_at_soft_cls, sampled_cond_labels.float())
-            #     pred_at_soft_cls = (prob_at_soft_cls >= 0).to(torch.long)
-            # else:
-            #     loss_at_soft_cls = self.CrossEntropyLoss(prob_at_soft_cls, sampled_cond_labels)
-            #     pred_at_soft_cls = torch.argmax(prob_at_soft_cls, dim=-1)
-            # acc_at_soft_cls = (pred_at_soft_cls == sampled_cond_labels).float()
+            # Generate based on sampled z and sampled labels. (conditional generation)
+            # cg_past = torch.cat([gen_past_z.unsqueeze(1), past_sampled_label.unsqueeze(1)], dim=1) # (B, 2, n_blocks * hidden_size)
+            cg_past = gen_past_z + past_sampled_label  # (B, n_blocks * hidden_size)
+            # cg_past = [cg_past.unsqueeze(-2), cg_past.unsqueeze(-2)]  # query, key
+            # cg_past = [cg_past] * len(self.transformer.h)
+            cg_generated = self.sample_sequence_conditional_batch(representations=cg_past,
+                                                                  context=self.bos_token_id_list)  # (B, seq_len)
 
-            # Loss
-            loss_latent_space = (loss_encoder + loss_lsc) + (
-                        loss_lsd + loss_lsg) + self.args.beta_cls * loss_cls  # + loss_at_soft_cls
-            loss = loss_rec + 1.0 * loss_latent_space
+            # classifier on gt generated sentences.
+            ge_emb = self.gpt_embeddings(generated)
+            ge_encode = self.conv1(ge_emb.transpose(1, 2))  # (B, dim_h, seq_len)
+            ge_encode = torch.mean(ge_encode, dim=-1)  # (B, dim_h)
+            prob_ge_cls = self.classifier(ge_encode)  # (B, 1)
 
-            if not self.training:
-                # Generate based on encoded z and gt labels
-                generated = self.sample_sequence_conditional_batch(past=past, context=self.bos_token_id_list)
+            if self.args.label_size <= 2:
+                pred_ge_cls = (prob_ge_cls.squeeze(1) >= 0).to(torch.long)
+            else:
+                pred_ge_cls = torch.argmax(prob_ge_cls, dim=-1)
+            acc_ge_cls = (pred_ge_cls == cond_labels).float()
 
-                # Generate based on encoded z and sampled labels (attribute transfer)
-                # at_past = torch.cat([past_z.unsqueeze(1), past_sampled_label.unsqueeze(1)], dim=1) # (B, 2, n_blocks * hidden_size)
-                at_past = past_z + past_sampled_label  # (B, n_blocks * hidden_size)
-                at_generated = self.sample_sequence_conditional_batch(past=at_past,
-                                                                      context=self.bos_token_id_list)  # (B, seq_len)
+            # classifier on attribute transfer generated sentences.
+            at_emb = self.gpt_embeddings(at_generated)
+            at_encode = self.conv1(at_emb.transpose(1, 2))  # (B, dim_h, seq_len)
+            at_encode = torch.mean(at_encode, dim=-1)  # (B, dim_h)
+            prob_at_cls = self.classifier(at_encode)  # (B, 1)
+            if self.args.label_size <= 2:
+                pred_at_cls = (prob_at_cls.squeeze(1) >= 0).to(torch.long)
+            else:
+                pred_at_cls = torch.argmax(prob_at_cls, dim=-1)
+            acc_at_cls = (pred_at_cls == sampled_cond_labels).float()
 
-                # Generate based on sampled z and sampled labels. (conditional generation)
-                # cg_past = torch.cat([gen_past_z.unsqueeze(1), past_sampled_label.unsqueeze(1)], dim=1) # (B, 2, n_blocks * hidden_size)
-                cg_past = gen_past_z + past_sampled_label  # (B, n_blocks * hidden_size)
-                cg_generated = self.sample_sequence_conditional_batch(past=cg_past,
-                                                                      context=self.bos_token_id_list)  # (B, seq_len)
+            # classifier on conditional generated sentences.
+            cg_emb = self.gpt_embeddings(cg_generated)
+            cg_encode = self.conv1(cg_emb.transpose(1, 2))  # (B, dim_h, seq_len)
+            cg_encode = torch.mean(cg_encode, dim=-1)  # (B, dim_h)
+            prob_cg_cls = self.classifier(cg_encode)  # (B, 1)
+            if self.args.class_num <= 2:
+                pred_cg_cls = (prob_cg_cls.squeeze(1) >= 0).to(torch.long)
+            else:
+                pred_cg_cls = torch.argmax(prob_cg_cls, dim=-1)
+            acc_cg_cls = (pred_cg_cls == sampled_cond_labels).float()
 
-                # classifier on gt generated sentences.
-                ge_emb = self.gpt_embeddings(generated)
-                ge_encode = self.conv1(ge_emb.transpose(1, 2))  # (B, dim_h, seq_len)
-                ge_encode = torch.mean(ge_encode, dim=-1)  # (B, dim_h)
-                prob_ge_cls = self.classifier(ge_encode)  # (B, 1)
+            result = {
+                'sampled_cond_labels': sampled_cond_labels,
+                'cond_labels': cond_labels,
 
-                if self.args.label_size <= 2:
-                    pred_ge_cls = (prob_ge_cls.squeeze(1) >= 0).to(torch.long)
-                else:
-                    pred_ge_cls = torch.argmax(prob_ge_cls, dim=-1)
-                acc_ge_cls = (pred_ge_cls == cond_labels).float()
+                'tgt_seq_ids': tgt_seq_ids,
+                'generated': generated,
+                'at_generated': at_generated,
+                'cg_generated': cg_generated,
 
-                # classifier on attribute transfer generated sentences.
-                at_emb = self.gpt_embeddings(at_generated)
-                at_encode = self.conv1(at_emb.transpose(1, 2))  # (B, dim_h, seq_len)
-                at_encode = torch.mean(at_encode, dim=-1)  # (B, dim_h)
-                prob_at_cls = self.classifier(at_encode)  # (B, 1)
-                if self.args.label_size <= 2:
-                    pred_at_cls = (prob_at_cls.squeeze(1) >= 0).to(torch.long)
-                else:
-                    pred_at_cls = torch.argmax(prob_at_cls, dim=-1)
-                acc_at_cls = (pred_at_cls == sampled_cond_labels).float()
-
-                # classifier on conditional generated sentences.
-                cg_emb = self.gpt_embeddings(cg_generated)
-                cg_encode = self.conv1(cg_emb.transpose(1, 2))  # (B, dim_h, seq_len)
-                cg_encode = torch.mean(cg_encode, dim=-1)  # (B, dim_h)
-                prob_cg_cls = self.classifier(cg_encode)  # (B, 1)
-                if self.args.label_size <= 2:
-                    pred_cg_cls = (prob_cg_cls.squeeze(1) >= 0).to(torch.long)
-                else:
-                    pred_cg_cls = torch.argmax(prob_cg_cls, dim=-1)
-                acc_cg_cls = (pred_cg_cls == sampled_cond_labels).float()
-
-                result = {
-                    'sampled_cond_labels': sampled_cond_labels,
-                    'cond_labels': cond_labels,
-
-                    'tgt_seq_ids': tgt_seq_ids,
-                    'generated': generated,
-                    'at_generated': at_generated,
-                    'cg_generated': cg_generated,
-
-                    'acc_encode_z_dis': acc_encode_z_dis,
-                    'acc_gen_z_dis': acc_gen_z_dis,
-                    'acc_encode_z_cls': acc_encode_z_cls,
-                    'acc_cls': acc_cls,
-                    'acc_ge_cls': acc_ge_cls,
-                    'acc_at_cls': acc_at_cls,
-                    'acc_cg_cls': acc_cg_cls,
-
-                    'pred_cls': pred_cls,
-                    'pred_ge_cls': pred_ge_cls,
-                    'pred_at_cls': pred_at_cls,
-                    'pred_cg_cls': pred_cg_cls,
-                }
-
-                return result
-
-            loss_dict = {
-                'loss': loss,
-                'loss_rec': loss_rec,
-                'loss_encoder': loss_encoder,
-                'loss_lsc': loss_lsc,
-                'loss_lsd': loss_lsd,
-                'loss_lsg': loss_lsg,
-                'loss_cls': loss_cls,
-            }
-            acc_dict = {
                 'acc_encode_z_dis': acc_encode_z_dis,
                 'acc_gen_z_dis': acc_gen_z_dis,
                 'acc_encode_z_cls': acc_encode_z_cls,
                 'acc_cls': acc_cls,
+                'acc_ge_cls': acc_ge_cls,
+                'acc_at_cls': acc_at_cls,
+                'acc_cg_cls': acc_cg_cls,
+
+                'pred_cls': pred_cls,
+                'pred_ge_cls': pred_ge_cls,
+                'pred_at_cls': pred_at_cls,
+                'pred_cg_cls': pred_cg_cls,
             }
-            return loss_dict, acc_dict
+
+            return result
+
+        loss_dict = {
+            'loss': loss,
+            'loss_rec': loss_rec,
+            'loss_encoder': loss_encoder,
+            'loss_lsc': loss_lsc,
+            'loss_lsd': loss_lsd,
+            'loss_lsg': loss_lsg,
+            'loss_cls': loss_cls,
+        }
+        acc_dict = {
+            'acc_encode_z_dis': acc_encode_z_dis,
+            'acc_gen_z_dis': acc_gen_z_dis,
+            'acc_encode_z_cls': acc_encode_z_cls,
+            'acc_cls': acc_cls,
+        }
+        return loss_dict, acc_dict
+
+    def sample_sequence_conditional_batch(self, representations, context):
+        # context: a single id of <BOS>
+        # past: (B, past_seq_len dim_h)
+        num_samples = representations.size(0)
+        context = torch.tensor(context, dtype=torch.long, device=representations.device)
+        context = context.unsqueeze(0).repeat(num_samples, 1)
+        generated = context # (B, 1)
+        mem = None
+        # with torch.no_grad():
+        while generated.size(-1) < self.args.block_size:
+            inputs = {'input_ids': generated, 'past': mem, 'representations': representations}
+            last_hidden, mem = self.transformer(**inputs)  # Note: we could also use 'past' with GPT-2/Transfo-XL/XLNet (cached hidden-states)
+            lm_logits = self.lm_head(last_hidden)  # (B, seq_len, vocab_size)
+
+            # softmax sample
+            next_tokens_logits = lm_logits[:, -1, :] / self.args.temperature  # (B, 1, vocab_size)
+            filtered_logits = self.top_k_top_p_filtering_batch(next_tokens_logits, top_k=self.args.top_k, top_p=self.args.top_p)  # (B, 1, vocab_size)
+            filtered_logits = F.softmax(filtered_logits, dim=-1)
+            next_tokens = torch.multinomial(filtered_logits, num_samples=1)   # (B, 1)
+            generated = torch.cat((generated, next_tokens), dim=1)  # (B, seq_len+1)
+
+            not_finished = next_tokens != self.eos_token
+            if torch.sum(not_finished) == 0:
+                break
+
+        return generated    # (B, seq_len)
 
     def top_k_top_p_filtering_batch(self, logits, top_k=0, top_p=0.0, filter_value=-float('Inf')):
         """ Filter a distribution of logits using top-k and/or nucleus (top-p) filtering
@@ -658,8 +687,7 @@ class Ctrl_AdaVAE(nn.Module):
         # context: a single id of <BOS>
         # past: (B, past_seq_len dim_h)
         num_samples = past.size(0)
-        context = torch.tensor(context, dtype=torch.long, device=past.device).unsqueeze(0).repeat(num_samples,
-                                                                                                  1)  # (B, 1)
+        context = torch.tensor(context, dtype=torch.long, device=past.device).unsqueeze(0).repeat(num_samples, 1)  # (B, 1)
         context_soft = torch.FloatTensor(num_samples, self.transformer.config.vocab_size).zero_().to(
             device=past.device)  # (B, vocab_size)
         context_soft.scatter_(1, context, 1)  # (B, vocab_size)
@@ -670,7 +698,8 @@ class Ctrl_AdaVAE(nn.Module):
             inputs = {'soft_ids': generated_soft, 'past': past}
             outputs = self.transformer(
                 **inputs)  # Note: we could also use 'past' with GPT-2/Transfo-XL/XLNet (cached hidden-states)
-            lm_logits = outputs[0]  # (B, seq_len, vocab_size)
+            hidden_states = outputs[0]
+            lm_logits = self.lm_head(hidden_states) # (B, seq_len, vocab_size)
 
             # Gumbel softmax sample
             next_tokens_soft = gumbel_softmax(logits=lm_logits[:, -1:, :], temperature=self.args.soft_temperature,

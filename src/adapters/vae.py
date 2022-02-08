@@ -11,15 +11,13 @@ import logging
 
 import torch
 import torch.nn as nn
-import math
+import math, sys
 import torch.nn.functional as F
-from transformers import BertModel
-# from transformers.modeling_bert import ACT2FN, BertSelfOutput
 from transformers.modeling_gpt2 import ACT2FN, Attention, GPT2Model, Block, MLP, GPT2LMHeadModel
 # from transformers.models.gpt2.modeling_gpt2 import ACT2FN, GPT2Attention, GPT2Model, GPT2Block, GPT2MLP, GPT2LMHeadModel
 from transformers.modeling_utils import PreTrainedModel, Conv1D, prune_conv1d_layer, SequenceSummary
-
-from adapters.common import AdapterConfig, init_lisa_params, init_bert_weights, init_bias_mlp, init_zero_weights, LoRALinear, Adapter_Layer, Prefix
+sys.path.append('../')
+from .common import AdapterConfig, init_lisa_params, init_bert_weights, init_bias_mlp, init_zero_weights, LoRALinear, Adapter_Layer, Prefix
 
 
 logging.basicConfig(level=logging.INFO)

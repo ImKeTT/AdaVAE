@@ -18,7 +18,7 @@ parser.add_argument('--max_length', type=int, default=40,
                     help='max length of every input sentence')
 parser.add_argument('--window_size', type=int, default=10,
                     help="dialogue window size.")
-parser.add_argument('--sep_word', type=str, default="[SEP]")
+parser.add_argument('--sep_word', type=str, default="<separate>")
 parser.add_argument('--data_dir', type=str, default='../data/dailydialog')
 parser.add_argument('--out_dir', type=str, default='train_out')
 
@@ -42,7 +42,7 @@ def main(args):
         with open(os.path.join(args.data_dir, file, f"dialogues_{file}.txt"), 'r') as f:
             datalist = f.readlines()
         processed = preprocess(args, datalist)
-        with open(os.path.join(args.data_dir, f"{file}.txt"), 'w') as f:
+        with open(os.path.join(args.data_dir, f"{file[:5]}.txt"), 'w') as f:
             for line in processed:
                 f.write(line + "\n")
         print(f"Finish processing {file} file.")

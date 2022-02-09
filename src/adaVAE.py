@@ -242,7 +242,11 @@ def train(args):
     # cache_dir = os.path.join(args.out_dir, 'model_cache')
     # os.makedirs(cache_dir, exist_ok=True)
     # Load pre-trained teacher tokenizer (vocabulary)
+
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
+    # special_tokens_dict = {'sep_token': '<separate>', 'pad_token': '<pad>'}
+    # tokenizer.add_special_tokens(special_tokens_dict)
+
     # Hack to allow tokenizing longer sequences.
     # tokenizer.max_len = int(1e12)
     gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
@@ -407,8 +411,8 @@ def train(args):
         #                                                   'optimizer_0000048.pt')))
         # gc.collect()
     logging.info('Done.')
-
-    loss_fn = nn.CrossEntropyLoss(reduction='none')
+    endoftext = tokenizer.convert_tokens_to_ids("<|endoftext|>")
+    loss_fn = nn.CrossEntropyLoss(ignore_index=endoftext, reduction='none')
     logging.info('Done.')
 
     logging.info('Begin training iterations')
@@ -419,7 +423,6 @@ def train(args):
     num_iters = 0
     optimizer.zero_grad()
     beta = args.beta_0
-    endoftext = tokenizer.convert_tokens_to_ids("<|endoftext|>")
 
     def val_step(val_loader):
         AdaVAE.eval()
@@ -750,7 +753,7 @@ def train(args):
 
 if __name__=="__main__":
     args = parser.parse_args()
-    # args = parser.parse_args('ex0116_as64_iter6k --batch-sizes 128 --max_length 25 --add_attn --label_cond --adapter_size 64 --latent_size 60 --decoder_n_layer 6'.split())
+    # args = parser.parse_args('--batch-sizes 100 --dataset yelp_data --max_length 32 --add_attn --adapter_size 128 --iterations 6001 --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 50.0'.split())
     # args = parser.parse_args('--batch-sizes 128 --max_length 25 --add_attn --adapter_size 128 --latent_size 32 '
     #                          '--decoder_n_layer 12 --encoder_n_layer 8 --adapter_init bert --attn_mode none --kl_rate 0.5'.split())
     train(args)

@@ -210,6 +210,40 @@ class GenerationDataset(Dataset):
             dl = f.readlines()
         return GenerationDataset(dl)
 
+class DialogGenerationDataset(Dataset):
+    def __init__(self, dl: list):
+        self.x = []
+        self.text_len = []
+        self.y = []
+        self.init_data(dl)
+        self.length = len(self.x)
+
+    def init_data(self, dl):
+        for inst in dl:
+            inst = inst.split('\t')
+            ## context
+            self.y.append(inst[0])
+            ## response
+            self.x.append(inst[1])
+            self.text_len.append(len(inst[1].split()))
+
+    def __getitem__(self, index: int) -> dict:
+        ## add BOS and EOS special token
+        x = '<|endoftext|> ' + self.x[index] + ' <|endoftext|>'
+        y = '<|endoftext|> ' + self.y[index] + ' <|endoftext|>'
+
+        return {'response': str(x), 'context': int(y)}
+
+    def __len__(self):
+        return self.length
+
+    ## call for direct input
+    @staticmethod
+    def from_file(file_path: str):
+        with open(file_path, 'r') as f:
+            dl = f.readlines()
+        return DialogGenerationDataset(dl)
+
 def collate_fn(samples: dict, eos_id: list, tokenizer):
     """ Creates a batch out of samples for direct input"""
     x_max_len = max(map(lambda s: len(s['x']), samples))

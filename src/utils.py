@@ -137,8 +137,16 @@ def sample_sequence(model, length, z=None, batch_size=None,
             if if_end.all(): break
     return output, probability
 
+def add_special_tokens_(tokenizer, model):
+    orig_num_tokens = len(tokenizer.encoder)
+    special_tokens_dict = {'sep_token': '<|sep|>', 'pad_token': '<|pad|>', 'cls_token': '<|cls|>'}
+    num_added_tokens = tokenizer.add_special_tokens(special_tokens_dict)
+    if num_added_tokens > 0:
+        model.encoder.resize_token_embeddings(new_num_tokens=orig_num_tokens + num_added_tokens)
+        model.transformer.resize_token_embeddings(new_num_tokens=orig_num_tokens + num_added_tokens)
+
 def tokenize(texts, tokenizer, device, args):
-    tokenizer.pad_token = tokenizer.eos_token
+    # tokenizer.pad_token = tokenizer.eos_token
     x_tokenized = tokenizer(texts, padding=True,
                                  truncation=True,
                             return_tensors='pt', max_length=args.max_length)

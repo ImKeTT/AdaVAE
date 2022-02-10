@@ -338,7 +338,7 @@ class CARA(nn.Module):
             # generated = torch.cat((generated, next_tokens), dim=1)  # (B, seq_len+1)
 
             next_tokens = torch.argmax(next_tokens_soft, dim=-1)    # (B, 1)
-            not_finished = next_tokens != self.tokenizer_decoder.encode('<EOS>')[0]
+            not_finished = next_tokens != self.tokenizer_decoder.encode('<|endoftext|>')[0]
             if torch.sum(not_finished) == 0:
                 break
 
@@ -354,7 +354,7 @@ class Ctrl_AdaVAE(nn.Module):
         self.transformer = decoder
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self.encoder = encoder
-        self.eos_token = eos_token
+        self.bos_token_id = self.eos_token = eos_token
 
         self.nz = AdapterConfig.latent_size
 
@@ -384,7 +384,7 @@ class Ctrl_AdaVAE(nn.Module):
 
         self.CrossEntropyLoss = nn.CrossEntropyLoss()
         self.BCEWithLogitsLoss = nn.BCEWithLogitsLoss()
-        self.logitsCrossEntropyLoss = nn.CrossEntropyLoss(reduction="none")
+        self.logitsCrossEntropyLoss = nn.CrossEntropyLoss(ignore_index=eos_token, reduction="none")
 
         # add code here
         self.add_input = add_input
@@ -527,7 +527,7 @@ class Ctrl_AdaVAE(nn.Module):
 
         if not self.training:
             # Generate based on encoded z and gt labels
-            generated = self.sample_sequence_conditional_batch(representations=past, context=self.bos_token_id_list)
+            generated = self.sample_sequence_conditional_batch(representations=past, context=self.bos_token_id)
 
             # Generate based on encoded z and sampled labels (attribute transfer)
             # at_past = torch.cat([past_z.unsqueeze(1), past_sampled_label.unsqueeze(1)], dim=1) # (B, 2, n_blocks * hidden_size)
@@ -535,7 +535,7 @@ class Ctrl_AdaVAE(nn.Module):
             # at_past = [at_past.unsqueeze(-2), at_past.unsqueeze(-2)]  # query, key
             # at_past = [at_past] * len(self.transformer.h)
             at_generated = self.sample_sequence_conditional_batch(representations=at_past,
-                                                                  context=self.bos_token_id_list)  # (B, seq_len)
+                                                                  context=self.bos_token_id)  # (B, seq_len)
 
             # Generate based on sampled z and sampled labels. (conditional generation)
             # cg_past = torch.cat([gen_past_z.unsqueeze(1), past_sampled_label.unsqueeze(1)], dim=1) # (B, 2, n_blocks * hidden_size)
@@ -543,7 +543,7 @@ class Ctrl_AdaVAE(nn.Module):
             # cg_past = [cg_past.unsqueeze(-2), cg_past.unsqueeze(-2)]  # query, key
             # cg_past = [cg_past] * len(self.transformer.h)
             cg_generated = self.sample_sequence_conditional_batch(representations=cg_past,
-                                                                  context=self.bos_token_id_list)  # (B, seq_len)
+                                                                  context=self.bos_token_id)  # (B, seq_len)
 
             # classifier on gt generated sentences.
             ge_emb = self.gpt_embeddings(generated)
@@ -573,7 +573,7 @@ class Ctrl_AdaVAE(nn.Module):
             cg_encode = self.conv1(cg_emb.transpose(1, 2))  # (B, dim_h, seq_len)
             cg_encode = torch.mean(cg_encode, dim=-1)  # (B, dim_h)
             prob_cg_cls = self.classifier(cg_encode)  # (B, 1)
-            if self.args.class_num <= 2:
+            if self.AdapterConfig.class_num <= 2:
                 pred_cg_cls = (prob_cg_cls.squeeze(1) >= 0).to(torch.long)
             else:
                 pred_cg_cls = torch.argmax(prob_cg_cls, dim=-1)
@@ -625,13 +625,12 @@ class Ctrl_AdaVAE(nn.Module):
         # context: a single id of <BOS>
         # past: (B, past_seq_len dim_h)
         num_samples = representations.size(0)
-        context = torch.tensor(context, dtype=torch.long, device=representations.device)
-        context = context.unsqueeze(0).repeat(num_samples, 1)
-        generated = context # (B, 1)
+        prev = torch.tensor([[context]] * num_samples, dtype=torch.long, device=representations.device)
+        generated = prev # (B, 1)
         mem = None
         # with torch.no_grad():
         while generated.size(-1) < self.args.block_size:
-            inputs = {'input_ids': generated, 'past': mem, 'representations': representations}
+            inputs = {'input_ids': prev, 'past': mem, 'representations': representations}
             last_hidden, mem = self.transformer(**inputs)  # Note: we could also use 'past' with GPT-2/Transfo-XL/XLNet (cached hidden-states)
             lm_logits = self.lm_head(last_hidden)  # (B, seq_len, vocab_size)
 
@@ -640,6 +639,7 @@ class Ctrl_AdaVAE(nn.Module):
             filtered_logits = self.top_k_top_p_filtering_batch(next_tokens_logits, top_k=self.args.top_k, top_p=self.args.top_p)  # (B, 1, vocab_size)
             filtered_logits = F.softmax(filtered_logits, dim=-1)
             next_tokens = torch.multinomial(filtered_logits, num_samples=1)   # (B, 1)
+            prev = next_tokens
             generated = torch.cat((generated, next_tokens), dim=1)  # (B, seq_len+1)
 
             not_finished = next_tokens != self.eos_token
@@ -663,8 +663,9 @@ class Ctrl_AdaVAE(nn.Module):
 
         if top_k > 0:
             # Remove all tokens with a probability less than the last token of the top-k
-            threshold = torch.topk(logits, top_k, dim=-1)[0][:, -1, None]
-            logits.masked_fill_(logits < threshold, filter_value)  # (B, vocab_size)
+            indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
+            # logits.masked_fill_(logits < threshold, filter_value)  # (B, vocab_size)
+            logits[indices_to_remove] = filter_value
 
         if top_p > 0.0:
             sorted_logits, sorted_indices = torch.sort(logits, descending=True)  # (B, vocab_size)
@@ -677,9 +678,11 @@ class Ctrl_AdaVAE(nn.Module):
             sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
             sorted_indices_to_remove[..., 0] = 0
 
-            indices_to_remove = sorted_indices[sorted_indices_to_remove]
+            # indices_to_remove = sorted_indices[sorted_indices_to_remove]
 
-            logits.masked_fill_(indices_to_remove, filter_value)
+            # logits.masked_fill_(indices_to_remove, filter_value)
+            indices_to_remove = sorted_indices_to_remove.scatter(dim=1, index=sorted_indices, src=sorted_indices_to_remove)
+            logits[indices_to_remove] = filter_value
 
         return logits
 

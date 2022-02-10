@@ -29,12 +29,12 @@ os.environ["CUDA_VISIBLE_DEVICES"] = '1'
 parser = argparse.ArgumentParser()
 
 # Default parameters are set based on single GPU training
-parser.add_argument('--lr', type=float, default=5e-5)
+parser.add_argument('--lr', type=float, default=5e-7)
 parser.add_argument("--seed", type=int, default=42)
 
 # parser.add_argument('--data_type', type=str, default='t1', choices=['t' + str(i) for i in range(9)], help="t: type")
 parser.add_argument('--model_type', type=str, default='cvae', choices=['cvae'])
-parser.add_argument('--iterations', type=int, default=2000 * 3)
+parser.add_argument('--iterations', type=int, default=4000 * 3)
 parser.add_argument('--dataset', type=str, default='yelp_polarity', choices=['yelp_polarity', 'imdb_polarity'],
                     help="Dataset to use for training")
 parser.add_argument('--warmup', type=int, default=1000,
@@ -65,18 +65,22 @@ parser.add_argument('--attn_mode', type=str, default="none",
 ## training paramters
 parser.add_argument('--batch-sizes', nargs='+', type=int, default=[1],
                     help='batch size per GPU. Lists the schedule.')
+parser.add_argument('--eval_batch_size', type=int, default=100,
+                    help='batch size per GPU. Lists the schedule.')
 parser.add_argument('--seq-lens', nargs='+', type=int, default=[30],
                     help='seq length per sample. Lists the schedule.')
 parser.add_argument('--max_length', type=int, default=25,
                     help='max length of every input sentence')
+parser.add_argument('--block_size', type=int, default=50,
+                    help='max length of generated sentences')
 parser.add_argument('--switch-time', type=float, default=0,
                     help="Percentage of iterations to spend on short sequence training.")
 parser.add_argument('--data-dir', type=str, default='data')
 parser.add_argument('--out-dir', type=str, default='train_out')
-parser.add_argument('--load_dir', type=str, default='../src/out_freeze_dec')
+parser.add_argument('--load_dir', type=str, default='../src/out')
 parser.add_argument('--experiment', type=str,
-                    default='yelp_data_iter10000_as128_scalar1.0_add_attn_beta1.0_reg-kld_attn_mode-none_'
-                            'ffn_option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-32_zrate-50.0_sd-42_2.7')
+                    default='yelp_data_iter6000_as128_scalar1.0_add_attn_beta1.0_reg-kld_attn_mode-none_ffn_'
+                            'option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-32_zrate-50.0_sd-42_2.9')
 parser.add_argument('--eval_output_dir', type=str, default='eval_out')
 parser.add_argument('--adapter_init', type=str, default='lora',
                     choices=['lora', 'bert', 'lisa', 'other'],
@@ -96,8 +100,8 @@ parser.add_argument('--beta_latent', default=1.00, type=float)
 parser.add_argument('--beta_warmup', type=int, default=1000)
 
 ## generation
-parser.add_argument('--top_p', default=5, type=int)
-parser.add_argument('--top_k', default=0.0, type=float)
+parser.add_argument('--top_k', default=5, type=int)
+parser.add_argument('--top_p', default=0.0, type=float)
 parser.add_argument('--temperature', default=1.0, type=float)
 
 ## trigger
@@ -137,14 +141,13 @@ def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, cond_
     return loss_dict, acc_dict
 
 
-def evaluate(args, model, tokenizer, logging, eval_dataloader, eval_output_dir, iter, device):
-    model.training = False
+def evaluate(args, model, tokenizer, logging, eval_dataloader, max_val_batches, eval_output_dir, iter, device):
     os.makedirs(eval_output_dir, exist_ok=True)
     # Eval!
     logging.info("***** Running evaluation *****")
     logging.info("  Num examples = %d" % len(eval_dataloader))
     logging.info("  Batch size = %d" % args.eval_batch_size)
-    logging.info("  Num steps = %d" % (len(eval_dataloader) // args.eval_batch_size))
+    logging.info("  Num steps = %d" % (min(max_val_batches, len(eval_dataloader) // args.eval_batch_size)))
 
     outputs = {
         'sampled_cond_labels': None,
@@ -158,37 +161,41 @@ def evaluate(args, model, tokenizer, logging, eval_dataloader, eval_output_dir, 
         'pred_at_cls': None,
         'pred_cg_cls': None,
     }
+    with tqdm(total=min(len(eval_dataloader), max_val_batches), desc="Evaluating Model") as pbar:
+        for bi, batch in enumerate(eval_dataloader):
 
-    for bi, batch in enumerate(tqdm(eval_dataloader, desc="#Sentences", disable=args.local_rank not in [-1, 0])):
+            # Data
+            # input_seq_ids, tgt_seq_ids, tokenized_text_lengths, cond_labels = batch
+            # max_len_values, _ = tokenized_text_lengths.max(0)
+            # input_seq_ids = input_seq_ids[:, :max_len_values[0]]
+            # tgt_seq_ids = tgt_seq_ids[:, :max_len_values[1]]
+            # input_seq_ids = input_seq_ids.to(args.device)
+            # tgt_seq_ids = tgt_seq_ids.to(args.device)
+            # cond_labels = cond_labels.to(args.device)
+            # input_mask = torch.where(
+            #     torch.arange(max_len_values[0].item()).unsqueeze(0).repeat(input_seq_ids.size(0), 1).type_as(
+            #         tokenized_text_lengths).to(args.device)
+            #     < tokenized_text_lengths[:, 0].unsqueeze(1).to(args.device), torch.ones_like(input_seq_ids),
+            #     torch.zeros_like(input_seq_ids))
 
-        # Data
-        # input_seq_ids, tgt_seq_ids, tokenized_text_lengths, cond_labels = batch
-        # max_len_values, _ = tokenized_text_lengths.max(0)
-        # input_seq_ids = input_seq_ids[:, :max_len_values[0]]
-        # tgt_seq_ids = tgt_seq_ids[:, :max_len_values[1]]
-        # input_seq_ids = input_seq_ids.to(args.device)
-        # tgt_seq_ids = tgt_seq_ids.to(args.device)
-        # cond_labels = cond_labels.to(args.device)
-        # input_mask = torch.where(
-        #     torch.arange(max_len_values[0].item()).unsqueeze(0).repeat(input_seq_ids.size(0), 1).type_as(
-        #         tokenized_text_lengths).to(args.device)
-        #     < tokenized_text_lengths[:, 0].unsqueeze(1).to(args.device), torch.ones_like(input_seq_ids),
-        #     torch.zeros_like(input_seq_ids))
+            ## Data
+            tgt_seq_ids, input_seq_ids, input_mask = tokenize(batch['x'], tokenizer, device, args)
+            cond_labels = torch.tensor(batch['y']).to(device)
 
-        ## Data
-        tgt_seq_ids, input_seq_ids, input_mask = tokenize(batch['x'], tokenizer, device, args)
-        cond_labels = torch.tensor(batch['y']).to(device)
+            # Model
+            with torch.no_grad():
+                result = model(input_ids=input_seq_ids, tgt_seq_ids=tgt_seq_ids, cond_labels=cond_labels,
+                                   attention_mask=input_mask)
+            if bi == 0:
+                for key in outputs.keys():
+                    outputs[key] = result[key].cpu().tolist()
+            else:
+                for key in outputs.keys():
+                    outputs[key].extend(result[key].cpu().tolist())
 
-        # Model
-        with torch.no_grad():
-            result = model(input_ids=input_seq_ids, tgt_seq_ids=tgt_seq_ids, cond_labels=cond_labels,
-                               attention_mask=input_mask)
-        if bi == 0:
-            for key in outputs.keys():
-                outputs[key] = result[key].cpu().tolist()
-        else:
-            for key in outputs.keys():
-                outputs[key].extend(result[key].cpu().tolist())
+            if bi > max_val_batches:
+                break
+            pbar.update(1)
 
         # compute accuracies and store in results
     acc = np.mean(np.array(np.array(outputs['pred_cls']) == np.array(outputs['cond_labels']), dtype=np.float))
@@ -204,9 +211,7 @@ def evaluate(args, model, tokenizer, logging, eval_dataloader, eval_output_dir, 
         os.path.join(eval_output_dir, "outputs_{}.json".format(iter) if iter is not None else "outputs.json"), 'w'))
 
     # compute BLEU
-    bos_token_id = tokenizer.encode('<BOS>')[0]
-    eos_token_id = tokenizer.encode('<EOS>')[0]
-    pad_token_id = tokenizer.encode('<PAD>')[0]
+    bos_token_id = eos_token_id = pad_token_id = tokenizer.encode('<|endoftext|>')[0]
 
     generated_ids = []
     generated_text = []
@@ -325,6 +330,7 @@ def main(args):
 
     config = GPT2Config()
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
+    tokenizer.pad_token = tokenizer.eos_token
     gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
     ada_config = AdapterConfig(hidden_size=768,
                                adapter_size=args.adapter_size,
@@ -488,7 +494,7 @@ def main(args):
     logging.info('Done.')
 
     logging.info("Begin training iterations")
-    max_val_batches = 200  # max num. of val batches
+    max_val_batches = 5  # max num. of val batches
     logging.info("Total iteration: %d" % args.iterations)
     e = 0  # number of epoch
     num_iters = 0
@@ -496,7 +502,7 @@ def main(args):
 
     def val_step(val_loader):
         model.eval()
-
+        """
         n_words_bpe = 0
         n_words = 0
         val_loss = []
@@ -530,9 +536,8 @@ def main(args):
                 val_acc_cls.append(val_acc_dict['acc_cls'].mean().item())
 
 
-                """
-                calculate text perplexity
-                """
+                ## calculate text perplexity
+                
                 target_tokens = val_x_ids
                 if len(target_tokens.size()) == 1:
                     target_tokens = target_tokens.unsqueeze(0)
@@ -584,11 +589,10 @@ def main(args):
         logging.info('val acc_enc_cls: %.4f' % np.mean(val_acc_enc_cls))
         logging.info('val acc_gen    : %.4f' % np.mean(val_acc_gen))
         logging.info('val acc_cls    : %.4f' % np.mean(val_acc_cls))
-
-        evaluate(args, model, tokenizer, logging, val_loader,
+        """
+        evaluate(args, model, tokenizer, logging, val_loader, max_val_batches,
                  os.path.join(args.eval_output_dir, args.dataset), num_iters, device)
 
-        model.training = True
         model.train()
 
     if args.do_train:
@@ -650,13 +654,13 @@ def main(args):
                     num_iters += 1
                     pbar.update(1)
 
-                    if num_iters % 500 == 0:
+                    if num_iters % 5000 == 0:
                         logging.info("test set")
                         val_step(test_loader)
                         logging.info("validation set")
                         val_step(val_loader)
 
-                    if (num_iters + 1) % 3000 == 0:
+                    if (num_iters + 1) % 6000 == 0:
                         logging.info('Saving model...')
                         logging.info("Iteration completed: %d, remained %d" % (num_iters, args.iterations - num_iters))
                         logging.info("Saving model...")
@@ -689,7 +693,7 @@ def main(args):
     ## evaluate: generate; evaluate...
     else:
         model.eval()
-        evaluate(args, model, tokenizer, logging, val_loader,
+        evaluate(args, model, tokenizer, logging, val_loader, max_val_batches,
                  os.path.join(args.eval_output_dir, args.dataset), 0, device)
 
 if __name__=="__main__":

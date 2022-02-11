@@ -18,7 +18,7 @@ parser.add_argument('--max_length', type=int, default=40,
                     help='max length of every input sentence')
 parser.add_argument('--window_size', type=int, default=10,
                     help="dialogue window size.")
-parser.add_argument('--sep_word', type=str, default="<separate>")
+parser.add_argument('--sep_word', type=str, default=";")
 parser.add_argument('--data_dir', type=str, default='../data/dailydialog')
 parser.add_argument('--out_dir', type=str, default='train_out')
 
@@ -27,6 +27,7 @@ def preprocess(args, datalist):
     for line in datalist:
         line = line.split("__eou__")[:-1] ## exclude \n
         if len(line)>1:
+            line = [l.replace(";", ",") for l in line]
             line = line[:args.window_size + 1]
             context = [' '.join(text.split()[:args.max_length]) for text in line[:-1]]
             context = f' {args.sep_word} '.join(context)

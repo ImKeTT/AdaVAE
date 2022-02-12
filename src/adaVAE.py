@@ -112,6 +112,7 @@ parser.add_argument('--save_all', action="store_true", help="save full parameter
 parser.add_argument('--add_input', action="store_true")
 parser.add_argument('--add_attn', action="store_true")
 parser.add_argument('--add_softmax', action="store_true")
+parser.add_argument('--add_mem', action="store_true")
 parser.add_argument('--attn_proj_vary', action="store_true")
 parser.add_argument('--learn_prior', action="store_true")
 parser.add_argument('--finetune_enc', action="store_true")
@@ -120,7 +121,7 @@ parser.add_argument('--finetune_dec', action="store_true")
 # args = parser.parse_args('test --batch-sizes 1 --seq-lens 1024 '
 #                          '--add_input --learn_prior --fp16'.split()) # wi.12.proj_vary_beta_cvae
 
-def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta, kl_rate, reg_loss):
+def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta, kl_rate, reg_loss, from_mean=True):
     """
 
     :param device:
@@ -137,7 +138,7 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
     att_mask = att_mask.to(device)
     x_tokens = x_tokens.to(device)
 
-    outputs = model(input_ids=input_tokens, attention_mask=att_mask, from_mean=True)
+    outputs = model(input_ids=input_tokens, attention_mask=att_mask, from_mean=from_mean)
     logits = outputs[0]
     regularization_loss = outputs[-3]
     mean = outputs[-2]
@@ -165,7 +166,7 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
 
     return loss, ce_loss, regularization_loss, mean, logvar
 
-def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, loss_fn, beta, kl_rate, reg_loss_type, model_type):
+def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, loss_fn, beta, kl_rate, reg_loss_type, from_mean, model_type):
     # output = []
     # if model_type == 'ae_vae_fusion':
     #     optimizer.zero_grad()
@@ -181,7 +182,7 @@ def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, loss_
 
     optimizer.zero_grad()
     loss, ce_loss, reg_loss, _, _ = compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn,
-                                          beta, kl_rate, reg_loss_type)
+                                          beta, kl_rate, reg_loss_type, from_mean)
     with amp.scale_loss(loss, optimizer) as scaled_loss:
         scaled_loss.backward()
         torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), 1.0)  # max_grad_norm=1.0
@@ -216,7 +217,17 @@ def train(args):
     torch.random.manual_seed(args.seed)
     if gpu: torch.cuda.manual_seed(args.seed); torch.cuda.manual_seed_all(args.seed)
 
-    fusion_type = "add_attn" if args.add_attn else "add_input"
+    if args.add_attn and args.add_mem:
+        fusion_type = "add_attn_mem"
+    elif args.add_attn and not args.add_mem:
+        fusion_type = "add_attn"
+    elif args.add_mem and not args.add_attn:
+        fusion_type = "add_mem"
+    elif args.add_input:
+        fusion_type = "add_input"
+    elif args.add_ouput:
+        fusion_type = "add_ouput"
+
     # logging
     experiment = f"{args.dataset}_iter{args.iterations}_as{args.adapter_size}_scalar{args.adapter_scalar}_{fusion_type}_beta{args.beta_0}" \
                  f"_reg-{args.reg_loss}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}_enc_layer-{args.encoder_n_layer}_" \
@@ -244,8 +255,6 @@ def train(args):
     # Load pre-trained teacher tokenizer (vocabulary)
 
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
-    # special_tokens_dict = {'sep_token': '<separate>', 'pad_token': '<pad>'}
-    # tokenizer.add_special_tokens(special_tokens_dict)
 
     # Hack to allow tokenizing longer sequences.
     # tokenizer.max_len = int(1e12)
@@ -304,13 +313,13 @@ def train(args):
                                tune_enc = args.finetune_enc,
                                tune_dec=args.finetune_dec)
     assert ada_config.ffn_option in ['sequential', 'parallel_attn', 'parallel_ffn', 'pfeiffer'], 'expect proper ffn_option'
-    ## latent (z) size is n_embd = 768
-    AdaVAE = AdaVAEModel(config, ada_config, add_input=args.add_input, add_attn=args.add_attn, add_softmax=args.add_softmax,
+
+    AdaVAE = AdaVAEModel(config, ada_config, add_input=args.add_input, add_attn=args.add_attn, add_softmax=args.add_softmax, add_mem=args.add_mem,
                    attn_proj_vary=args.attn_proj_vary, learn_prior=args.learn_prior, reg_loss=args.reg_loss)
     init_para_frompretrained(AdaVAE.transformer, gpt2_model.transformer, share_para=True)
     init_para_frompretrained(AdaVAE.encoder, gpt2_model.transformer, share_para=True)
 
-    ## freeze all prarameters expect the ones in adapters
+    ## freeze all prarameters excpect the ones in adapters
     # AdaVAE = freeze_all_parameters(AdaVAE)
     # AdaVAE.transformer = unfreeze_GPT2_adapters(AdaVAE.transformer, Cond_GPT2Adapter)
     # AdaVAE.encoder = unfreeze_GPT2_adapters(AdaVAE.encoder, Cond_GPT2Adapter)
@@ -331,14 +340,19 @@ def train(args):
     args.cycle = int(args.iterations/3)
     tuning_all = False
     for name, parameter in AdaVAE.named_parameters():
-        new_pars = ['c_z', 'attention_weights', 'mean', 'logvar', 'input_proj', 'attn_proj', 'Nu_fc1', 'Nu_fc2',
+        new_pars = ['attention_weights', 'mean', 'logvar', 'input_proj', 'attn_proj', 'Nu_fc1', 'Nu_fc2',
                     'lm_head_rep']
         if args.reg_loss == "adversarial":
             new_pars.append('discriminator')
+        if args.add_mem:
+            new_pars.append('latent2mem')
+        if args.add_attn:
+            new_pars.append('c_z')
 
         if not any([True if n in name else False for n in new_pars]):
             parameter.requires_grad = False
-        # print((name, parameter.requires_grad))
+        print((name, parameter.requires_grad))
+    print(AdaVAE)
     logging.info(f'AdaVAE params with gradients: {num_params(AdaVAE)}')
 
     logging.info('Setup data...')
@@ -380,6 +394,9 @@ def train(args):
     # Apply linear scaling rule to increase batch size for short sequence training.
     lr_schedule = switch_schedule(linear_schedule(args), batch_schedule[cur_b_schedule][0] / batch_schedule[-1][0],
                                   int(args.iterations * args.switch_time))
+
+    tokenizer.pad_token = tokenizer.eos_token
+    # add_special_tokens_(tokenizer, AdaVAE)
     AdaVAE = AdaVAE.to(device)
     AdaVAE.train()
 
@@ -472,10 +489,9 @@ def train(args):
 
                 n_words_bpe += len(text)
 
-                ctext = [tokenizer.decode(target_tokens[i, :]) for i in range(n)]
+                ctext = [tokenizer.decode(target_tokens[i, :], clean_up_tokenization_spaces=True) for i in range(n)]
                 ctext = [s[s.find("<|endoftext|>") + len("<|endoftext|>"):] for s in ctext]
-                ctext = [s[:s.find("<|endoftext|>") + len("<|endoftext|>")] if "<|endoftext|>" in s else s for s in
-                         ctext]
+                ctext = [s[:s.find("<|endoftext|>") + len("<|endoftext|>")] if "<|endoftext|>" in s else s for s in ctext]
                 words = sum([len(
                     [t for t in re.split('("|\'|!|\?|\.|,|:| |\n|’|“|”|;|\(|\)|`)', s) if t != ' ' and t != '']) for
                     s in ctext])
@@ -616,7 +632,7 @@ def train(args):
                 idx = sent.index(endoftext)
                 sent = sent[:idx]
 
-            sent = tokenizer.decode(sent).strip()
+            sent = tokenizer.decode(sent, clean_up_tokenization_spaces=True).strip()
             logging.info(sent)
 
         AdaVAE.train()
@@ -669,7 +685,7 @@ def train(args):
                     scheduler.step()
 
                 loss, ce_loss, regul_loss = train_step(device, AdaVAE, optimizer, x_ids, input_ids, attention_mask,
-                                                       loss_fn, beta, args.kl_rate, args.reg_loss, args.model_type)
+                                                       loss_fn, beta, args.kl_rate, args.reg_loss, args.model_type, False)
 
                 lr = scheduler.get_last_lr()[0]
                 # Log to Tensorboard
@@ -699,13 +715,13 @@ def train(args):
                     beta = args.beta_0
                     logging.info('KL annealing restart')
 
-                if num_iters % 500 == 0:
+                if num_iters % 2000 == 0:
                     logging.info("test set")
                     val_step(test_loader)
                     logging.info("validation set")
                     val_step(val_loader)
 
-                if (num_iters + 1) % 3000 == 0:
+                if (num_iters + 1) % 6000 == 0:
                     logging.info('Saving model...')
                     logging.info("Iteration completed: %d, remained %d" % (num_iters, args.iterations - num_iters))
                     logging.info("Saving model...")
@@ -741,6 +757,12 @@ def train(args):
             e += 1
             logging.info("Training loop. The ith epoch completed: %d" % e)
 
+    ## last iteration testing
+    logging.info("test set")
+    val_step(test_loader)
+    logging.info("validation set")
+    val_step(val_loader)
+
     if args.save_all:
         save_orderdict = AdaVAE.state_dict()
     else:
@@ -753,7 +775,7 @@ def train(args):
 
 if __name__=="__main__":
     args = parser.parse_args()
-    # args = parser.parse_args('--batch-sizes 100 --dataset yelp_data --max_length 32 --add_attn --adapter_size 128 --iterations 6001 --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 50.0'.split())
+    # args = parser.parse_args('--batch-sizes 100 --dataset yelp_data --max_length 32 --add_attn --adapter_size 128 --iterations 6001 --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 10.0'.split())
     # args = parser.parse_args('--batch-sizes 128 --max_length 25 --add_attn --adapter_size 128 --latent_size 32 '
     #                          '--decoder_n_layer 12 --encoder_n_layer 8 --adapter_init bert --attn_mode none --kl_rate 0.5'.split())
     train(args)

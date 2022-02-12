@@ -162,7 +162,7 @@ class MAM_Attention(Attention):
     """
     parallel adapter with prefix-tuning and LoRA component
     """
-    def __init__(self, nx, n_ctx, config, AdapterConfig, bias_bool=True, scale=False):
+    def __init__(self, nx, n_ctx, config, AdapterConfig, add_attn=True, add_mem=False, bias_bool=True, scale=False):
         super(Attention, self).__init__()
         # self.output_attentions = config.output_attentions
         self.output_attentions = False
@@ -177,6 +177,8 @@ class MAM_Attention(Attention):
         self.config = config
         self.attn_mode = AdapterConfig.attn_mode
         self.attn_option = AdapterConfig.attn_option
+        self.add_mem = add_mem
+        self.add_attn = add_attn
 
         # self.c_attn = Conv1D(n_state * 3, nx)
         ## use linear layer (which is approximately equivelent to Conv1D) to parameterize q, k, v
@@ -193,8 +195,12 @@ class MAM_Attention(Attention):
         self.resid_dropout = nn.Dropout(config.resid_pdrop)
         self.pruned_heads = set()
 
-        # add code here
-        self.c_z = Conv1D(n_state * 2, nx)
+        if add_mem:
+            self.latent2mem = nn.Linear(nx, nx, bias=False)
+
+        if add_attn:
+            # add code here
+            self.c_z = Conv1D(n_state * 2, nx)
 
         if 'prefix' in self.attn_mode:
             if self.attn_option == 'cross_attn' or self.attn_option == 'cross_attn_relu':
@@ -249,6 +255,11 @@ class MAM_Attention(Attention):
         query = self.split_heads(query)
         key = self.split_heads(key, k=True)
         value = self.split_heads(value)
+        if self.add_mem:
+            layer_past = [self.latent2mem(z),
+                    self.latent2mem(z)]  # query, key
+            # layer_past = [past] * self.decoder_n_layer
+            attention_mask = None
         if layer_past is not None:
             past_key, past_value = layer_past[0].transpose(-2, -1), layer_past[1]  # transpose back cf below
             if len(past_key.size()) != len(key.size()):
@@ -287,13 +298,14 @@ class MAM_Attention(Attention):
         elif self.attn_mode == "adapter":
             pass
 
-        ## PSA concat
-        z_conv = self.c_z(z)
-        key_z, value_z = z_conv.split(self.split_size, dim=2)
-        key_z = self.split_heads(key_z, k=True)
-        value_z = self.split_heads(value_z)
-        key = torch.cat((key_z, key), dim=-1)
-        value = torch.cat((value_z, value), dim=-2)
+        if self.add_attn:
+            ## PSA concat
+            z_conv = self.c_z(z)
+            key_z, value_z = z_conv.split(self.split_size, dim=2)
+            key_z = self.split_heads(key_z, k=True)
+            value_z = self.split_heads(value_z)
+            key = torch.cat((key_z, key), dim=-1)
+            value = torch.cat((value_z, value), dim=-2)
 
         attn_outputs = self._attn(query, key, value, attention_mask, head_mask, output_attentions)
         a = attn_outputs[0]
@@ -633,17 +645,17 @@ class Cond_Masked_Block(Block):
 
 ## Additive attention block for method 2 in the paper
 class Masked_Block(Block):
-    def __init__(self, n_ctx, config, AdapterConfig, scale=False):
+    def __init__(self, n_ctx, config, AdapterConfig, add_attn=True, add_mem=False, scale=False):
         super(Block, self).__init__()
         nx = config.n_embd
         self.ln_1 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
-        self.attn = MAM_Attention(nx, n_ctx, config, AdapterConfig, scale=scale)
+        self.attn = MAM_Attention(nx, n_ctx, config, AdapterConfig, add_attn, add_mem, scale=scale)
         self.ln_2 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
         self.mlp = MLP(4 * nx, config)
 
-    def forward(self, x, z, layer_past=None, attention_mask=None, head_mask=None):
+    def forward(self, x, z, h_len, layer_past=None, attention_mask=None, head_mask=None):
         output_attn = self.attn(
-            self.ln_1(x), z, layer_past=layer_past, attention_mask=attention_mask, head_mask=head_mask
+            self.ln_1(x), z, layer_past=layer_past, attention_mask=attention_mask, head_mask=head_mask, h_len=h_len,
         )
         a = output_attn[0]  # output_attn: a, present, (attentions)
 
@@ -738,12 +750,12 @@ class AdapterBlock(Block):
     to infuse latent variable z to attention layers
     adapter-tuning essentially add down/up projection to the output
     """
-    def __init__(self, n_ctx, config, AdapterConfig, scale=False):
+    def __init__(self, n_ctx, config, AdapterConfig, add_attn=True, add_mem=False, scale=False):
         super(Block, self).__init__()
         nx = config.n_embd
         self.ln_1 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
         # self.attn = Cond_Attention(nx, n_ctx, config, AdapterConfig, scale)
-        self.attn = MAM_Attention(nx, n_ctx, config, AdapterConfig, scale=scale)
+        self.attn = MAM_Attention(nx, n_ctx, config, AdapterConfig, add_attn, add_mem, scale=scale)
         self.ln_2 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
         if AdapterConfig.ffn_option == "pfeiffer":
             self.ln_3 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
@@ -852,9 +864,9 @@ class Encoder(GPT2Model):
         self.init_weights()
 
         # added code here
-        self.averageSelfAttention = AverageSelfAttention(config.n_embd, AdapterConfig)
         nx = config.n_embd
         nz = AdapterConfig.latent_size
+        self.averageSelfAttention = AverageSelfAttention(nx, AdapterConfig)
         self.mean = Conv1D(nz, nx)
         self.logvar = Conv1D(nz, nx)
         if self.attn_mode == "prefix":
@@ -995,7 +1007,7 @@ class Encoder(GPT2Model):
 
 
 class Decoder(GPT2Model):
-    def __init__(self, config, AdapterConfig, add_input=False, add_attn=False, attn_proj_vary=False):
+    def __init__(self, config, AdapterConfig, add_input=False, add_attn=False, add_mem=False, attn_proj_vary=False):
         """
 
         :param config:
@@ -1009,6 +1021,7 @@ class Decoder(GPT2Model):
         # added code here
         self.add_input = add_input
         self.add_attn = add_attn
+        self.add_mem = add_mem
         self.attn_proj_vary = attn_proj_vary
 
         # self.output_hidden_states = config.output_hidden_states
@@ -1030,7 +1043,7 @@ class Decoder(GPT2Model):
             nx = config.n_embd
             self.input_proj = nn.Linear(nz, nx, bias=False)
 
-        if self.add_attn:
+        if self.add_attn or self.add_mem:
             nz = AdapterConfig.latent_size
             nx = config.n_embd
             n = AdapterConfig.decoder_n_layer
@@ -1039,9 +1052,9 @@ class Decoder(GPT2Model):
                 self.attn_proj = nn.Linear(nz, nx * n, bias=False)
             else:
                 self.attn_proj = nn.Linear(nz, nx, bias=False)
-            self.h = nn.ModuleList([Masked_Block(config.n_ctx, config, AdapterConfig,
+            self.h = nn.ModuleList([Masked_Block(config.n_ctx, config, AdapterConfig, add_attn, add_mem,
                                                  scale=True) for _ in range(n)]) if self.tune_dec else \
-                nn.ModuleList([AdapterBlock(config.n_ctx, config, AdapterConfig,
+                nn.ModuleList([AdapterBlock(config.n_ctx, config, AdapterConfig, add_attn, add_mem,
                                             scale=True) for _ in range(n)])
             ## Fine-tuing decoder block
             # self.h = nn.ModuleList([Cond_Block(config.n_ctx, config, scale=True) for _ in range(config.n_layer)])
@@ -1160,7 +1173,7 @@ class Decoder(GPT2Model):
 
         # add code here
         ## method 2 in the paper: add to attention layers
-        if self.add_attn:
+        if self.add_attn or self.add_mem:
             assert (representations is not None)
             ## add condition to latent representation via concatenation
             # representations = torch.cat([representations, label_emb], dim=-1)
@@ -1176,7 +1189,7 @@ class Decoder(GPT2Model):
             if self.output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states.view(*output_shape),)
 
-            if self.add_attn:
+            if self.add_attn or self.add_mem:
                 if self.attn_proj_vary:
                     z = attn_proj[i]
                 else:
@@ -1288,7 +1301,7 @@ class VAEModel(GPT2LMHeadModel):
         self.attn_proj_vary = attn_proj_vary
         self.learn_prior = learn_prior
 
-        self.transformer = Decoder(config, AdapterConfig, add_input, add_attn, attn_proj_vary)
+        self.transformer = Decoder(config, AdapterConfig, add_input, add_attn, False, attn_proj_vary)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
         self.encoder = Encoder(config, AdapterConfig)
@@ -1369,7 +1382,7 @@ class VAEModel(GPT2LMHeadModel):
         return outputs  # lm_logits, presents, (all hidden_states), (attentions), (kl_loss)
 
 class AdaVAEModel(GPT2LMHeadModel):
-    def __init__(self, config, AdapterConfig, add_input=False, add_attn=False, add_softmax=False,
+    def __init__(self, config, AdapterConfig, add_input=False, add_attn=False, add_softmax=False, add_mem=False,
                  attn_proj_vary=False, learn_prior=False, reg_loss="kld"):
         super(GPT2LMHeadModel, self).__init__(config)
 
@@ -1377,16 +1390,16 @@ class AdaVAEModel(GPT2LMHeadModel):
         self.add_input = add_input
         self.add_attn = add_attn
         self.add_softmax = add_softmax
+        self.add_mem = add_mem
         self.attn_proj_vary = attn_proj_vary
         self.learn_prior = learn_prior
         self.reg_loss = reg_loss
         self.AdapterConfig = AdapterConfig
-
+        self.encoder = Encoder(config, AdapterConfig)
         self.transformer = Decoder(config, AdapterConfig, add_input, add_attn,
-                                   attn_proj_vary)
+                                   add_mem, attn_proj_vary)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
-        self.encoder = Encoder(config, AdapterConfig)
         if self.learn_prior:
             self.encoder_prior = Encoder(config, AdapterConfig)
 

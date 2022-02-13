@@ -24,7 +24,7 @@ from src.data import ConditionalGenerationDataset
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, AdamW, get_linear_schedule_with_warmup, Conv1D
 
 
-os.environ["CUDA_VISIBLE_DEVICES"] = '1'
+# os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 
 parser = argparse.ArgumentParser()
 
@@ -34,7 +34,7 @@ parser.add_argument("--seed", type=int, default=42)
 
 # parser.add_argument('--data_type', type=str, default='t1', choices=['t' + str(i) for i in range(9)], help="t: type")
 parser.add_argument('--model_type', type=str, default='cvae', choices=['cvae'])
-parser.add_argument('--iterations', type=int, default=4000 * 3)
+parser.add_argument('--iterations', type=int, default=10000 * 3)
 parser.add_argument('--dataset', type=str, default='yelp_polarity', choices=['yelp_polarity', 'imdb_polarity'],
                     help="Dataset to use for training")
 parser.add_argument('--warmup', type=int, default=1000,
@@ -79,8 +79,7 @@ parser.add_argument('--data-dir', type=str, default='data')
 parser.add_argument('--out-dir', type=str, default='train_out')
 parser.add_argument('--load_dir', type=str, default='../src/out')
 parser.add_argument('--experiment', type=str,
-                    default='yelp_data_iter6000_as128_scalar1.0_add_attn_beta1.0_reg-kld_attn_mode-none_ffn_'
-                            'option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-32_zrate-50.0_sd-42_2.9')
+                    default=None)
 parser.add_argument('--eval_output_dir', type=str, default='eval_out')
 parser.add_argument('--adapter_init', type=str, default='lora',
                     choices=['lora', 'bert', 'lisa', 'other'],
@@ -102,13 +101,14 @@ parser.add_argument('--beta_warmup', type=int, default=1000)
 ## generation
 parser.add_argument('--top_k', default=5, type=int)
 parser.add_argument('--top_p', default=0.0, type=float)
-parser.add_argument('--temperature', default=1.0, type=float)
+parser.add_argument('--temperature', default=0.5, type=float)
 
 ## trigger
 parser.add_argument('--load', action="store_true")
 parser.add_argument('--do_train', action="store_true")
 parser.add_argument('--add_input', action="store_true")
 parser.add_argument('--add_attn', action="store_true")
+parser.add_argument('--add_mem', action="store_true")
 parser.add_argument('--add_softmax', action="store_true")
 parser.add_argument('--finetune_enc', action="store_true")
 parser.add_argument('--finetune_dec', action="store_true")
@@ -265,16 +265,13 @@ def evaluate(args, model, tokenizer, logging, eval_dataloader, max_val_batches, 
         cg_generated_ids.append(g)
         cg_generated_text.append(g_text)
 
-    f = open(
-        os.path.join(eval_output_dir, "reconstruction{}.txt".format(('_' + str(iter)) if iter is not None else '')),
-        'w')
+    f = open(os.path.join(eval_output_dir, "reconstruction{}.txt".format(('_' + str(iter)) if iter is not None else '')), 'w')
     f.write('\n'.join([g + '\n' + t for g, t in zip(generated_text, tgt_seq_text)]))
     fat = open(os.path.join(eval_output_dir,
                             "attribute_transfer{}.txt".format(('_' + str(iter)) if iter is not None else '')), 'w')
     fat.write('\n'.join([g + '\n' + t for g, t in zip(at_generated_text, tgt_seq_text)]))
     fcg = open(os.path.join(eval_output_dir,
-                            "conditional_generation{}.txt".format(('_' + str(iter)) if iter is not None else '')),
-               'w')
+                            "conditional_generation{}.txt".format(('_' + str(iter)) if iter is not None else '')), 'w')
     fcg.write('\n'.join(cg_generated_text))
 
     rec_bleu = nltk.translate.bleu_score.corpus_bleu(list_of_references=[[nltk.word_tokenize(t)] for t in tgt_seq_text],
@@ -310,6 +307,8 @@ def evaluate(args, model, tokenizer, logging, eval_dataloader, max_val_batches, 
     return metrics
 
 def main(args):
+    now = datetime.datetime.now()
+    date = f"{now.month}.{now.day}"
     # GPU
     if not torch.cuda.is_available(): args.no_gpu = True
     gpu = not args.no_gpu
@@ -348,11 +347,11 @@ def main(args):
                                mid_dim=30,
                                attn_bn=25,
                                prefix_dropout=0.1,
-                               tune_enc=args.finetune_enc,
-                               tune_dec=args.finetune_dec)
+                               tune_enc=False,
+                               tune_dec=False) ## two-stage training, should employ plain GPT-2 decoder/encoder + adapters
 
     AdaVae_encoder = Encoder(config, ada_config)
-    AdaVae_decoder = Decoder(config, ada_config, args.add_input, args.add_attn, attn_proj_vary=False)
+    AdaVae_decoder = Decoder(config, ada_config, args.add_input, args.add_attn, args.add_mem, attn_proj_vary=False)
     # AdaVae_average_attn = AverageSelfAttention(config.n_embd, ada_config)
     endoftext = tokenizer.convert_tokens_to_ids("<|endoftext|>")
 
@@ -368,7 +367,13 @@ def main(args):
     print('Loading model weights...')
     experiment = args.experiment
     load_folder = os.path.join(args.load_dir, experiment)
-    save_folder = os.path.join(args.out_dir, args.dataset)
+    if args.add_attn and args.add_mem:
+        final_folder = f"{args.dataset}_{date}_add_attn_mem"
+    elif args.add_attn:
+        final_folder = f"{args.dataset}_{date}_add_attn"
+    elif args.add_mem:
+        final_folder = f"{args.dataset}_{date}_add_mem"
+    save_folder = os.path.join(args.out_dir, final_folder)
     os.makedirs(save_folder, exist_ok=True)
     t_writer = SummaryWriter(os.path.join(save_folder, 'train'), flush_secs=5)
     v_writer = SummaryWriter(os.path.join(save_folder, 'val'), flush_secs=5)
@@ -412,16 +417,26 @@ def main(args):
     encoder_unfreeze_modules = [GPT2Adapter]
     if ada_config.attn_mode == "prefix":
         pass
-    model.transformer = unfreeze_GPT2_adapters(model.transformer, decoder_unfreeze_modules)
+
+    ## deal with encoder/decoder parameter settings
     if args.finetune_enc or args.finetune_dec:
-        if args.finetune_enc:
+        if args.finetune_enc and args.finetune_dec:
             for _, parameter in model.encoder.named_parameters():
                 parameter.requires_grad = True
-        if args.finetune_dec:
             for _, parameter in model.transformer.named_parameters():
                 parameter.requires_grad = True
+        elif args.finetune_enc:
+            for _, parameter in model.encoder.named_parameters():
+                parameter.requires_grad = True
+            model.transformer = unfreeze_GPT2_adapters(model.transformer, decoder_unfreeze_modules)
+        elif args.finetune_dec:
+            for _, parameter in model.transformer.named_parameters():
+                parameter.requires_grad = True
+            model.encoder = unfreeze_GPT2_adapters(model.encoder, encoder_unfreeze_modules)
     else:
         model.encoder = unfreeze_GPT2_adapters(model.encoder, encoder_unfreeze_modules)
+        model.transformer = unfreeze_GPT2_adapters(model.transformer, decoder_unfreeze_modules)
+
     for name, parameter in model.named_parameters():
         print((name, parameter.requires_grad))
     model_params_with_gradients = num_params(model)
@@ -591,7 +606,7 @@ def main(args):
         logging.info('val acc_cls    : %.4f' % np.mean(val_acc_cls))
         """
         evaluate(args, model, tokenizer, logging, val_loader, max_val_batches,
-                 os.path.join(args.eval_output_dir, args.dataset), num_iters, device)
+                 os.path.join(args.eval_output_dir, final_folder), num_iters, device)
 
         model.train()
 
@@ -674,8 +689,7 @@ def main(args):
                                 if parameter.requires_grad:
                                     save_orderdict[name] = parameter
                         torch.save(save_orderdict,
-                                   os.path.join(save_folder, 'ckpt/model',
-                                                'model_' + '{:07d}'.format(num_iters) + '.pt'))
+                                   os.path.join(save_folder, 'model_' + '{:07d}'.format(num_iters) + '.pt'))
             if not end:
                 e += 1
                 logging.info("Training loop. The ith epoch completed: %d" % e)
@@ -694,9 +708,10 @@ def main(args):
     else:
         model.eval()
         evaluate(args, model, tokenizer, logging, val_loader, max_val_batches,
-                 os.path.join(args.eval_output_dir, args.dataset), 0, device)
+                 os.path.join(args.eval_output_dir, f"{args.dataset}_{date}"), 0, device)
 
 if __name__=="__main__":
     args = parser.parse_args()
-    args = parser.parse_args('--batch-sizes 100 --max_length 32 --add_attn --do_train --adapter_size 128 --latent_size 32'.split())
+    # args = parser.parse_args('--batch-sizes 50 --max_length 64 --add_mem --do_train --adapter_size 128 --latent_size 32 --experiment '
+    #                          'yelp_polarity_iter6000_as128_scalar1.0_add_mem_beta1.0_reg-kld_attn_mode-none_ffn_option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-32_zrate-10.0_sd-42_2.12'.split())
     main(args)

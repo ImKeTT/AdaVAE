@@ -28,7 +28,7 @@ from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, AdamW, get_
 
 
 # devices = '0'
-# os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+# os.environ["CUDA_VISIBLE_DEVICES"] = '1'
 
 parser = argparse.ArgumentParser()
 
@@ -62,6 +62,9 @@ parser.add_argument('--adapter_scalar', type=str, default="1.0",
                     help="adapter scalar")
 parser.add_argument('--ffn_option', type=str, default="parallel_ffn",
                     choices=['sequential', 'parallel_attn', 'parallel_ffn', 'pfeiffer'],
+                    help="adapter type option")
+parser.add_argument('--latent_gen', type=str, default="averaged_attn",
+                    choices=['averaged_attn', 'linear'],
                     help="adapter type option")
 parser.add_argument('--attn_mode', type=str, default="prefix",
                     choices=['prefix', 'adapter', 'lora', 'none'],
@@ -229,7 +232,7 @@ def train(args):
         fusion_type = "add_ouput"
 
     # logging
-    experiment = f"{args.dataset}_iter{args.iterations}_as{args.adapter_size}_scalar{args.adapter_scalar}_{fusion_type}_beta{args.beta_0}" \
+    experiment = f"{args.dataset}_iter{args.iterations}_as{args.adapter_size}_scalar{args.adapter_scalar}_lg-{args.latent_gen}_{fusion_type}_beta{args.beta_0}" \
                  f"_reg-{args.reg_loss}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}_enc_layer-{args.encoder_n_layer}_" \
                  f"dec_layer-{args.decoder_n_layer}_zdim-{args.latent_size}_zrate-{args.kl_rate}_sd-{args.seed}_{now.month}.{now.day}"
     save_folder = os.path.join(args.out_dir, experiment)
@@ -239,7 +242,7 @@ def train(args):
     v_writer = SummaryWriter(os.path.join(save_folder, 'val'), flush_secs=5)
     # importlib.reload(logging)
     logging_file = f"{args.dataset}_init-{args.adapter_init}_ada-scalar{args.adapter_scalar}_as{args.adapter_size}_" \
-                   f"{fusion_type}_beta{args.beta_0}_reg-{args.reg_loss}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}" \
+                   f"lg-{args.latent_gen}_{fusion_type}_beta{args.beta_0}_reg-{args.reg_loss}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}" \
                    f"beta{args.beta_0}_enc_layer-{args.encoder_n_layer}_dec_layer-{args.decoder_n_layer}_" \
                    f"zdim-{args.latent_size}_zrate-{args.kl_rate}_sd-{args.seed}_{now.month}.{now.day}.log"
     logging = Logger(os.path.join(save_folder, logging_file))
@@ -306,6 +309,7 @@ def train(args):
                                adapter_scalar=args.adapter_scalar,
                                ffn_option=args.ffn_option,
                                attn_mode=args.attn_mode,
+                               latent_gen=args.latent_gen,
                                attn_option='none',
                                mid_dim=30,
                                attn_bn=25,
@@ -341,13 +345,7 @@ def train(args):
     tuning_all = False
     for name, parameter in AdaVAE.named_parameters():
         new_pars = ['attention_weights', 'mean', 'logvar', 'input_proj', 'attn_proj', 'Nu_fc1', 'Nu_fc2',
-                    'lm_head_rep']
-        if args.reg_loss == "adversarial":
-            new_pars.append('discriminator')
-        if args.add_mem:
-            new_pars.append('latent2mem')
-        if args.add_attn:
-            new_pars.append('c_z')
+                    'lm_head_rep', 'z_linear', 'discriminator', 'latent2mem', 'c_z']
 
         if not any([True if n in name else False for n in new_pars]):
             parameter.requires_grad = False
@@ -721,7 +719,7 @@ def train(args):
                     logging.info("validation set")
                     val_step(val_loader)
 
-                if (num_iters + 1) % 6000 == 0:
+                if (num_iters + 1) % 10000 == 0:
                     logging.info('Saving model...')
                     logging.info("Iteration completed: %d, remained %d" % (num_iters, args.iterations - num_iters))
                     logging.info("Saving model...")
@@ -775,7 +773,7 @@ def train(args):
 
 if __name__=="__main__":
     args = parser.parse_args()
-    # args = parser.parse_args('--batch-sizes 100 --dataset yelp_data --max_length 32 --add_attn --adapter_size 128 --iterations 6001 --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 10.0'.split())
+    # args = parser.parse_args('--batch-sizes 100 --dataset yelp_data --max_length 32 --add_attn --latent_gen linear --adapter_size 128 --iterations 6000 --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 0.0'.split())
     # args = parser.parse_args('--batch-sizes 128 --max_length 25 --add_attn --adapter_size 128 --latent_size 32 '
     #                          '--decoder_n_layer 12 --encoder_n_layer 8 --adapter_init bert --attn_mode none --kl_rate 0.5'.split())
     train(args)

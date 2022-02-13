@@ -20,6 +20,7 @@ class AdapterConfig(NamedTuple):
     adapter_scalar: str
     ffn_option: str # sequential / parallel_attn / parallel_ffn / pfeiffer
     attn_mode: str # 'prefix', 'adapter', 'lora', 'none'
+    latent_gen: str # 'averaged_attn', 'linear'
     attn_option: str
     mid_dim: int
     attn_bn: int

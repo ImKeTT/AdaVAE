@@ -653,9 +653,9 @@ class Masked_Block(Block):
         self.ln_2 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
         self.mlp = MLP(4 * nx, config)
 
-    def forward(self, x, z, h_len, layer_past=None, attention_mask=None, head_mask=None):
+    def forward(self, x, z, layer_past=None, attention_mask=None, head_mask=None):
         output_attn = self.attn(
-            self.ln_1(x), z, layer_past=layer_past, attention_mask=attention_mask, head_mask=head_mask, h_len=h_len,
+            self.ln_1(x), z, layer_past=layer_past, attention_mask=attention_mask, head_mask=head_mask
         )
         a = output_attn[0]  # output_attn: a, present, (attentions)
 
@@ -849,6 +849,7 @@ class Encoder(GPT2Model):
         ## wpe is word position embedding
         self.wpe = nn.Embedding(config.n_positions, config.n_embd)
         self.drop = nn.Dropout(config.embd_pdrop)
+        self.latent_type = AdapterConfig.latent_gen
         self.attn_mode = AdapterConfig.attn_mode
         self.tune_enc = AdapterConfig.tune_enc
 
@@ -866,7 +867,12 @@ class Encoder(GPT2Model):
         # added code here
         nx = config.n_embd
         nz = AdapterConfig.latent_size
-        self.averageSelfAttention = AverageSelfAttention(nx, AdapterConfig)
+        if self.latent_type == "averaged_attn":
+            self.averageSelfAttention = AverageSelfAttention(nx, AdapterConfig)
+        elif self.latent_type == "linear":
+            self.z_linear = nn.Linear(nx, nx)
+        else:
+            raise NotImplementedError("Not implemented !")
         self.mean = Conv1D(nz, nx)
         self.logvar = Conv1D(nz, nx)
         if self.attn_mode == "prefix":
@@ -988,7 +994,12 @@ class Encoder(GPT2Model):
 
         # added code here
         ## latent space parameterization
-        representations, _ = self.averageSelfAttention(hidden_states, attention_mask.squeeze(1).squeeze(1))
+        if self.latent_type == "averaged_attn":
+            representations, _ = self.averageSelfAttention(hidden_states, attention_mask.squeeze(1).squeeze(1))
+        elif self.latent_type == "linear":
+            representations = self.z_linear(hidden_states[:, 0]) ## following Optimus. We "pool" the model by simply taking the hidden state correspondin to the first token.
+        else:
+            raise NotImplementedError("not implemented !")
         mean = self.mean(representations)
         logvar = self.logvar(representations)
 
@@ -1195,11 +1206,16 @@ class Decoder(GPT2Model):
                 else:
                     z = attn_proj
                 ## add label embedding to decoder adapter
-
-                outputs = block(
-                    hidden_states, z, layer_past=layer_past, attention_mask=attention_mask,
-                    head_mask=head_mask[i], prefix_state=prefix_state[i] if isinstance(prefix_state, list) else prefix_state
-                )
+                if self.tune_dec:
+                    outputs = block(
+                        hidden_states, z, layer_past=layer_past, attention_mask=attention_mask,
+                        head_mask=head_mask[i]
+                    )
+                else:
+                    outputs = block(
+                        hidden_states, z, layer_past=layer_past, attention_mask=attention_mask,
+                        head_mask=head_mask[i], prefix_state=prefix_state[i] if isinstance(prefix_state, list) else prefix_state
+                    )
 
             else:
                 outputs = block(

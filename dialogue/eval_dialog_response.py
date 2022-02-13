@@ -13,7 +13,7 @@ import os, pickle
 class Metrics:
     # based on https://raw.githubusercontent.com/guxd/DialogWAE/29f206af05bfe5fe28fec4448e208310a7c9258d/experiments/metrics.py
 
-    def __init__(self, path_word2vec='../data/datasets/dailydialog_data/glove.twitter.27B.200d.txt'):
+    def __init__(self, path_word2vec='../data/data/dailydialog/vectors/glove.twitter.27B.200d.txt'):
         """
         :param word2vec - a numpy array of word2vec with shape [vocab_size x emb_size]
         """

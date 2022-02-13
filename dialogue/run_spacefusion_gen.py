@@ -29,6 +29,7 @@ from transformers.modeling_utils import PreTrainedModel, Conv1D, prune_conv1d_la
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, AdamW, get_linear_schedule_with_warmup, Conv1D
 
 
+os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 ## tokenize for dialog generation task
 def tokenize(context, response, tokenizer, device, args):
 
@@ -36,11 +37,11 @@ def tokenize(context, response, tokenizer, device, args):
                                    max_length=args.max_length)
     context_tokenized = tokenizer(context, padding=True, truncation=True, return_tensors='pt')
 
-    inputs_src = context_tokenized['input_ids'].to(device)
-    src_attention_mask = context_tokenized['attention_mask'].to(device)
-    labels_tgt = response_tokenized['input_ids'].to(device)
-    inputs_tgt = labels_tgt
-    tgt_attention_mask =  response_tokenized['attention_mask'].to(device)
+    inputs_src = context_tokenized['input_ids'][:, :-1].to(device)
+    src_attention_mask = context_tokenized['attention_mask'][:, :-1].to(device)
+    labels_tgt = response_tokenized['input_ids'][:, 1:].to(device)
+    inputs_tgt = labels_tgt[:, :-1]
+    tgt_attention_mask =  response_tokenized['attention_mask'][:, 1:].to(device)
 
     return inputs_src, inputs_tgt, labels_tgt, src_attention_mask, tgt_attention_mask
 
@@ -68,9 +69,165 @@ def train_step(device, model, optimizer, inputs_src, inputs_tgt, labels_tgt, src
     # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # max_grad_norm=1.0
     optimizer.step()
 
+    return loss, loss_rec, loss_reg
 
-def evaluate(args):
-    pass
+def top_k_top_p_filtering_mb(logits, top_k=0, top_p=0.0, filter_value=-float('Inf')):
+    """ Filter a distribution of logits using top-k and/or nucleus (top-p) filtering
+            Args:
+                logits: logits distribution shape (vocabulary size)
+                top_k > 0: keep only top k tokens with highest probability (top-k filtering).
+                top_p > 0.0: keep the top tokens with cumulative probability >= top_p (nucleus filtering).
+                    Nucleus filtering is described in Holtzman et al. (http://arxiv.org/abs/1904.09751)
+            From: https://gist.github.com/thomwolf/1a5a29f6962089e871b94cbd09daf317
+        """
+    top_k = min(top_k, logits.size(-1))  # Safety check
+
+    if top_k > 0:
+        # Remove all tokens with a probability less than the last token of the top-k
+        indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
+        # logits.masked_fill_(logits < threshold, filter_value)  # (B, vocab_size)
+        logits[indices_to_remove] = filter_value
+
+    if top_p > 0.0:
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True)  # (B, vocab_size)
+        cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)  # (B, vocab_size)
+
+        # Remove tokens with cumulative probability above the threshold
+        sorted_indices_to_remove = cumulative_probs > top_p
+
+        # Shift the indices to the right to keep also the first token above the threshold
+        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+        sorted_indices_to_remove[..., 0] = 0
+
+        indices_to_remove = sorted_indices_to_remove.scatter(dim=1, index=sorted_indices, src=sorted_indices_to_remove)
+        logits[indices_to_remove] = filter_value
+
+    return logits
+
+def sample_sequence_conditional(model, length, context, endoftext, z=None, num_samples=1, temperature=1, top_k=0, top_p=0.0):
+    generated = context
+    mem = None
+    prev = context
+    with torch.no_grad():
+        while True:
+            # for _ in trange(length):
+            inputs = {'input_ids': prev, 'past': mem, 'representations': z}
+            last_hidden, mem = model.transformer(**inputs)  # Note: we could also use 'past' with GPT-2/Transfo-XL/XLNet (cached hidden-states)
+            lm_logits = model.lm_head(last_hidden)  # (B, seq_len, vocab_size)
+            next_token_logits = lm_logits[0][:, -1, :] / temperature
+            filtered_logits = top_k_top_p_filtering_mb(next_token_logits, top_k=top_k, top_p=top_p)
+            next_token = torch.multinomial(F.softmax(filtered_logits, dim=-1), num_samples=1)
+            generated = torch.cat((generated, next_token), dim=1)
+            prev = next_token
+
+            # pdb.set_trace()
+            if next_token.unsqueeze(0)[0, 0].item() == endoftext or generated.shape[1] > length:
+                break
+
+    return generated
+
+def evaluate(args, model_sf, encoder_tokenizer, decoder_tokenizer, eval_dataloader, logging, prefix="", subset="test"):
+    # Loop to handle MNLI double evaluation (matched, mis-matched)
+    eval_output_dir = args.eval_out_dir
+
+    logging.info("***** Running evaluation on {} dataset *****".format(subset))
+
+    if not os.path.exists(eval_output_dir) and args.local_rank in [-1, 0]:
+        os.makedirs(eval_output_dir)
+
+    # args.per_gpu_eval_batch_size = 1
+    args.n_gpu = 1
+    args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
+
+    # Eval!
+    logging.info("***** Running evaluation {} *****".format(prefix))
+    logging.info("  Num examples = %d", len(eval_dataloader))
+    logging.info("  Batch size = %d", args.eval_batch_size)
+
+    model_sf.eval()
+
+    count = 0
+    result = []
+
+    epoch_iterator = tqdm(eval_dataloader, desc="Iteration", disable=args.local_rank not in [-1, 0])
+    for step, batch in enumerate(epoch_iterator):
+        input_ids_bert_ctx, input_ids_bert, input_ids_gpt, token_lengths = batch
+
+        input_ids_bert_ctx = input_ids_bert_ctx.to(args.device)
+        input_ids_bert = input_ids_bert.to(args.device)
+        input_ids_gpt = input_ids_gpt.to(args.device)
+
+        if len(input_ids_bert_ctx[0, :]) > 512:
+            input_ids_bert_ctx = input_ids_bert_ctx[0, -512:].unsqueeze(0)
+
+        # else:
+        #     continue
+
+        # pdb.set_trace()
+
+        # if step == 0:
+        #     input_ids_bert_ctx_previous = input_ids_bert_ctx
+        # else:
+        #     # pdb.set_trace()
+        #     if (input_ids_bert_ctx_previous.shape == input_ids_bert_ctx.shape) and torch.eq(input_ids_bert_ctx_previous, input_ids_bert_ctx)[0].type(torch.float).mean().item() == 1.0:
+        #         continue
+        #     else:
+        #         input_ids_bert_ctx_previous = input_ids_bert_ctx
+        #         print(step)
+
+        context_tokens = decoder_tokenizer.encode('<|endoftext|>')
+        context_tokens = torch.tensor(context_tokens, dtype=torch.long, device=args.device)
+        context_tokens = context_tokens.unsqueeze(0).repeat(token_lengths.shape[0], 1)
+
+        with torch.no_grad():
+
+            text_src = encoder_tokenizer.decode(input_ids_bert_ctx[0, :].tolist(), clean_up_tokenization_spaces=False)
+            text_src = "".join(text_src)
+
+            text_ref = encoder_tokenizer.decode(input_ids_bert[0, :].tolist(), clean_up_tokenization_spaces=False)
+            text_ref = "".join(text_ref)
+
+            for i in range(args.sents_per_cxt):
+                latent_z = model_sf.sent2latent(input_ids_bert_ctx)
+
+                out = sample_sequence_conditional(
+                    model=model_sf.decoder,
+                    context=context_tokens,
+                    past=latent_z,
+                    length=256,  # Chunyuan: Fix length; or use <EOS> to complete a sentence
+                    temperature=args.temperature,
+                    top_k=args.top_k,
+                    top_p=args.top_p,
+                    device=args.device,
+                    decoder_tokenizer=decoder_tokenizer
+                )
+                text_hpy = decoder_tokenizer.decode(out[0, :].tolist(), clean_up_tokenization_spaces=False)
+
+                text_hpy = text_hpy.split()[1:-1]
+                text_hpy = ' '.join(text_hpy) + '\n'
+
+                textline = "\t".join([text_src, text_ref, text_hpy])
+                # pdb.set_trace()
+                result.append(textline)
+
+            epoch_iterator.set_description(
+                (
+                    f'step: {step}'
+                )
+            )
+
+        count += 1
+        if args.total_sents > 0 and count > args.total_sents:
+            break
+
+    output_eval_file = os.path.join(eval_output_dir, "eval_text_generation_results.txt")
+    with open(output_eval_file, "w") as writer:
+        logging.info("***** Eval results {} *****".format(prefix))
+        for res in result:
+            # logger.info("%s \n" % res)
+            writer.write("%s \n" % res)
+
+    return result
 
 def main(args):
     now = datetime.datetime.now()
@@ -119,8 +276,10 @@ def main(args):
     # os.makedirs(cache_dir, exist_ok=True)
     # Load pre-trained teacher tokenizer (vocabulary)
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
-    special_tokens_dict = {'sep_token': '<separate>', 'pad_token': '<pad>'}
-    tokenizer.add_special_tokens(special_tokens_dict)
+    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.sep_token = tokenizer.convert_tokens_to_ids(";")[0]
+    # special_tokens_dict = {'sep_token': '<separate>', 'pad_token': '<pad>'}
+    # tokenizer.add_special_tokens(special_tokens_dict)
 
     # Hack to allow tokenizing longer sequences.
     # tokenizer.max_len = int(1e12)
@@ -288,14 +447,9 @@ def main(args):
             for i, val_data_dict in enumerate(val_loader):
                 with torch.no_grad():
                     val_x_ids, val_input_ids, val_attention_mask = tokenize(val_data_dict['x'], tokenizer, device, args)
-                    # val_label_onehot = F.one_hot(torch.tensor(val_data_dict['y']),
-                    #                          torch.tensor(ada_config.class_num)).float().to(device)
 
                     val_loss, val_ce_loss, val_reg_loss = model_sf(device, model_sf, val_x_ids, val_input_ids,
                                                      val_attention_mask, loss_fn, 1.0, 0.0, args.reg_loss)
-                    # else:
-                    #     loss, ce_loss, kl_loss = compute_loss_ae(device, model_sf, x_mask, x_tokens, y_mask, y_tokens,
-                    #                                              input_tokens, target_tokens, mask, loss_fn, 1.0)
                 """
                 calculate text perplexity
                 """
@@ -370,7 +524,7 @@ def main(args):
         # train_iter = iter(train_loader); x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask = next(train_iter)
         with tqdm(total=len(train_loader)) as pbar:
             for i, data_dict in enumerate(train_loader):
-                x_ids, input_ids, attention_mask = tokenize(data_dict['x'], tokenizer, device, args)
+                inputs_src, inputs_tgt, labels_tgt, src_attention_mask, tgt_attention_mask = tokenize(data_dict['x'], tokenizer, device, args)
 
                 if num_iters % args.cycle >= args.cycle - args.beta_warmup:
                     beta = min(1.0, beta + (1. - args.beta_0) / args.beta_warmup)
@@ -409,7 +563,7 @@ def main(args):
                     scheduler.step()
 
                 loss, ce_loss, reg_loss = train_step(device, model_sf, optimizer, inputs_src, inputs_tgt,
-                                                     labels_tgt, src_attention_mask, tgt_attention_mask, beta, kl_rate)
+                                                     labels_tgt, src_attention_mask, tgt_attention_mask, beta, args.kl_rate)
 
                 lr = scheduler.get_last_lr()[0]
                 # Log to Tensorboard
@@ -438,13 +592,13 @@ def main(args):
                     beta = args.beta_0
                     logging.info('KL annealing restart')
 
-                if num_iters % 500 == 0:
+                if num_iters % 5000 == 0:
                     logging.info("test set")
                     val_step(test_loader)
                     logging.info("validation set")
                     val_step(val_loader)
 
-                if (num_iters + 1) % 3000 == 0:
+                if (num_iters + 1) % 6000 == 0:
                     logging.info('Saving model...')
                     logging.info("Iteration completed: %d, remained %d" % (num_iters, args.iterations - num_iters))
                     logging.info("Saving model...")
@@ -458,8 +612,7 @@ def main(args):
                             if parameter.requires_grad:
                                 save_orderdict[name] = parameter
                     torch.save(save_orderdict,
-                               os.path.join(save_folder, 'ckpt/model',
-                                            'model_' + '{:07d}'.format(num_iters) + '.pt'))
+                               os.path.join(save_folder, 'model_' + '{:07d}'.format(num_iters) + '.pt'))
                     # torch.save(optimizer.state_dict(),
                     #            os.path.join(save_folder, 'ckpt/opt',
                     #                         'optimizer_' + '{:07d}'.format(num_iters) + '.pt'))

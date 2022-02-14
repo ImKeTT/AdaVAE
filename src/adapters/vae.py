@@ -997,7 +997,7 @@ class Encoder(GPT2Model):
         if self.latent_type == "averaged_attn":
             representations, _ = self.averageSelfAttention(hidden_states, attention_mask.squeeze(1).squeeze(1))
         elif self.latent_type == "linear":
-            representations = self.z_linear(hidden_states[:, 0]) ## following Optimus. We "pool" the model by simply taking the hidden state correspondin to the first token.
+            representations = self.z_linear(hidden_states[:, 0]) ## following optimus. We "pool" the model by simply taking the hidden state correspondin to the first token.
         else:
             raise NotImplementedError("not implemented !")
         mean = self.mean(representations)
@@ -1424,9 +1424,9 @@ class AdaVAEModel(GPT2LMHeadModel):
             self.lm_head_rep = Conv1D(config.vocab_size, nz)
             # self.lm_head_rep = LM_head_rep(nz, config.vocab_size)
         if self.reg_loss == "adversarial":
-            self.discriminator = nn.Sequential(nn.Linear(config.n_embd, config.dis_emb),
+            self.discriminator = nn.Sequential(nn.Linear(AdapterConfig.latent_size, AdapterConfig.dis_emb),
                                                nn.ReLU(),
-                                               nn.Linear(config.dis_emb, 1),
+                                               nn.Linear(AdapterConfig.dis_emb, 1),
                                                nn.Softmax())
 
     def reparameterize(self, mean, logvar, z=None):
@@ -1460,7 +1460,7 @@ class AdaVAEModel(GPT2LMHeadModel):
                  F.binary_cross_entropy(self.discriminator(zn), ones)
         ## generator loss
         loss_g = F.binary_cross_entropy(self.discriminator(z), ones)
-        return loss_d, loss_g
+        return [loss_d, loss_g]
 
     def symlog_loss(self, mean, logvar):
         z0 = self.reparameterize(mean, logvar)
@@ -1516,6 +1516,7 @@ class AdaVAEModel(GPT2LMHeadModel):
 
         if self.reg_loss == "adversarial":
             regularization_loss = self.adv_loss(posterior_mean, posterior_logvar, prior_mean, prior_logvar)
+            regularization_loss.append(self.kl_loss(posterior_mean, posterior_logvar, prior_mean, prior_logvar).unsqueeze(0))
         elif self.reg_loss == "kld":
             # kl_loss
             regularization_loss = self.kl_loss(posterior_mean, posterior_logvar, prior_mean, prior_logvar).unsqueeze(0)

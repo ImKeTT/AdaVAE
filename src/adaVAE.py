@@ -147,7 +147,7 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
     mean = outputs[-2]
     logvar = outputs[-1]
     if reg_loss == "adversarial":
-        d_loss, g_loss = regularization_loss[0], regularization_loss[1]
+        d_loss, g_loss, kld = regularization_loss[0], regularization_loss[1], regularization_loss[2]
     else:
         kl_loss = regularization_loss
     num_logits = logits.size(-1)
@@ -164,7 +164,6 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
     if reg_loss == "adversarial":
         loss = ce_loss.mean() + beta * g_loss + d_loss
     else:
-        kl_loss = kl_loss.mean()
         loss = ce_loss.mean() + beta * max(kl_loss, kl_rate)
 
     return loss, ce_loss, regularization_loss, mean, logvar
@@ -194,7 +193,7 @@ def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, loss_
     optimizer.step()
     # output.append((loss.item(), ce_loss.mean().item(), reg_loss.item()))
 
-    return loss.item(), ce_loss.mean().item(), reg_loss.item()
+    return loss.item(), ce_loss.mean().item(), reg_loss
 
 def train(args):
     now = datetime.datetime.now()
@@ -305,6 +304,7 @@ def train(args):
                                class_num=args.class_num,
                                encoder_n_layer=args.encoder_n_layer,
                                decoder_n_layer=args.decoder_n_layer,
+                               dis_emb=128,
                                init=args.adapter_init,
                                adapter_scalar=args.adapter_scalar,
                                ffn_option=args.ffn_option,
@@ -367,7 +367,10 @@ def train(args):
         GDataset = ConditionalGenerationDataset
     else:
         prefix_path = "../data/optimus_dataset"
-        GDataset = GenerationDataset
+        if args.dataset in ['yelp_data']:
+            GDataset = ConditionalGenerationDataset
+        else:
+            GDataset = GenerationDataset
     train_loader = DataLoader(
         GDataset.from_file(os.path.join(prefix_path, args.dataset, "train.txt")),
         batch_size=batch_schedule[cur_b_schedule][0],
@@ -446,8 +449,12 @@ def train(args):
         n_words = 0
         n_examples = 0
         cnt_au = 0
-        logp_sum = 0.0
-        reg_loss_sum = 0.0
+        logp_sum = 0.
+        reg_loss_sum = 0.
+
+        if args.reg_loss == "adversarial":
+            d_loss_sum = 0.
+            g_loss_sum = 0.
 
         mu_batch_list, logvar_batch_list = [], []
         neg_entropy = 0.
@@ -494,8 +501,13 @@ def train(args):
                     [t for t in re.split('("|\'|!|\?|\.|,|:| |\n|’|“|”|;|\(|\)|`)', s) if t != ' ' and t != '']) for
                     s in ctext])
                 n_words += words
-
-                reg_loss_sum += val_reg_loss.item()
+                if args.reg_loss == "adversarial":
+                    d_loss, g_loss, kld = val_reg_loss[0].item(), val_reg_loss[1].item(), val_reg_loss[2].item()
+                    reg_loss_sum += kld
+                    d_loss_sum += d_loss
+                    g_loss_sum += g_loss
+                else:
+                    reg_loss_sum += val_reg_loss.item()
 
                 """
                 calculate mutual information (mi) Stage 1
@@ -527,6 +539,8 @@ def train(args):
         ppl_bpe = round(math.exp(min(logp_sum / n_words_bpe, 100)), 3)
         ppl_word = round(math.exp(min(logp_sum / n_words, 100)), 3)
         reg = reg_loss_sum / len(val_loader)
+        d_loss = d_loss_sum / len(val_loader)
+        g_loss = g_loss_sum / len(val_loader)
 
         """
         calculate mi and au Stage 2
@@ -584,7 +598,7 @@ def train(args):
                 with torch.no_grad():
                     val_x_ids, val_input_ids, val_attention_mask = tokenize(val_data_dict['x'], tokenizer, device, args)
 
-                    val_loss, val_ce_loss, val_reg_loss, val_mu, val_lv = compute_loss(device, AdaVAE, val_x_ids,
+                    val_loss, val_ce_loss, _, val_mu, val_lv = compute_loss(device, AdaVAE, val_x_ids,
                                                                                        val_input_ids, val_attention_mask,
                                                                                        loss_fn, 1.0, 0.0, args.reg_loss)
                 if cnt_au == 0:
@@ -609,6 +623,11 @@ def train(args):
         v_writer.add_scalar('reg_loss', reg, num_iters)
         v_writer.add_scalar('mutual_information', mi, num_iters)
         v_writer.add_scalar('activagte_unit', n_au, num_iters)
+        if args.reg_loss == "adversarial":
+            v_writer.add_scalar('d_loss', d_loss, num_iters)
+            v_writer.add_scalar('g_loss', g_loss, num_iters)
+            logging.info('val d_loss: %.4f' % d_loss)
+            logging.info('val g_loss: %.4f' % g_loss)
         logging.info('val loss    : %.4f' % loss_bpe)
         logging.info('val ppl_bpe : %.4f' % ppl_bpe)
         logging.info('val ppl_word: %.4f' % ppl_word)
@@ -684,6 +703,10 @@ def train(args):
 
                 loss, ce_loss, regul_loss = train_step(device, AdaVAE, optimizer, x_ids, input_ids, attention_mask,
                                                        loss_fn, beta, args.kl_rate, args.reg_loss, args.model_type, False)
+                if args.reg_loss == "adversarial":
+                    d_loss, g_loss, kld = regul_loss[0].item(), regul_loss[1].item(), regul_loss[2].item()
+                else:
+                    kld = regul_loss.item()
 
                 lr = scheduler.get_last_lr()[0]
                 # Log to Tensorboard
@@ -691,7 +714,10 @@ def train(args):
                 t_writer.add_scalar('ppl', math.exp(min(ce_loss, 10)), num_iters)
                 t_writer.add_scalar('lr', lr, num_iters)
                 t_writer.add_scalar('iter_time', time.time() - st, num_iters)
-                t_writer.add_scalar('kl', regul_loss, num_iters)
+                t_writer.add_scalar('kl', kld, num_iters)
+                if args.reg_loss == "adversarial":
+                    t_writer.add_scalar('d_loss', d_loss, num_iters)
+                    t_writer.add_scalar('g_loss', g_loss, num_iters)
                 t_writer.add_scalar('beta', beta, num_iters)
 
                 # if args.model_type == 'ae_vae_fusion':
@@ -713,13 +739,13 @@ def train(args):
                     beta = args.beta_0
                     logging.info('KL annealing restart')
 
-                if num_iters % 2000 == 0:
+                if num_iters % 1 == 0:# 2000 == 0:
                     logging.info("test set")
                     val_step(test_loader)
                     logging.info("validation set")
                     val_step(val_loader)
 
-                if (num_iters + 1) % 10000 == 0:
+                if (num_iters + 1) % 20000 == 0:
                     logging.info('Saving model...')
                     logging.info("Iteration completed: %d, remained %d" % (num_iters, args.iterations - num_iters))
                     logging.info("Saving model...")
@@ -773,7 +799,7 @@ def train(args):
 
 if __name__=="__main__":
     args = parser.parse_args()
-    # args = parser.parse_args('--batch-sizes 100 --dataset yelp_data --max_length 32 --add_attn --latent_gen linear --adapter_size 128 --iterations 6000 --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 0.0'.split())
+    # args = parser.parse_args('--batch-sizes 100 --dataset yelp_data --max_length 32 --reg_loss adversarial --add_attn --latent_gen linear --adapter_size 128 --iterations 1000 --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 0.0'.split())
     # args = parser.parse_args('--batch-sizes 128 --max_length 25 --add_attn --adapter_size 128 --latent_size 32 '
     #                          '--decoder_n_layer 12 --encoder_n_layer 8 --adapter_init bert --attn_mode none --kl_rate 0.5'.split())
     train(args)

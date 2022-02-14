@@ -297,6 +297,7 @@ def main(args):
                                class_num=args.class_num,
                                encoder_n_layer=args.encoder_n_layer,
                                decoder_n_layer=args.decoder_n_layer,
+                               dis_emb=128,
                                init=args.adapter_init,
                                adapter_scalar=args.adapter_scalar,
                                ffn_option=args.ffn_option,

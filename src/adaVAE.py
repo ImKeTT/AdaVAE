@@ -84,6 +84,8 @@ parser.add_argument('--switch-time', type=float, default=0,
                     help="Percentage of iterations to spend on short sequence training.")
 parser.add_argument('--data-dir', type=str, default='data')
 parser.add_argument('--out-dir', type=str, default='out')
+parser.add_argument('--from_optimus', type=str, default=None,
+                    help="file to load pre-trained transformer from Optimus GPT-2")
 parser.add_argument('--adapter_init', type=str, default='lora',
                     choices=['lora', 'bert', 'lisa', 'other'],
                     help="parameter initialization method for adapter layers.")
@@ -111,7 +113,8 @@ parser.add_argument('--cycle', type=int, default=2000)
 ## trigger
 parser.add_argument('--load', action="store_true")
 # parser.add_argument('--label_cond', action="store_true")
-parser.add_argument('--save_all', action="store_true", help="save full parameters of the model")
+parser.add_argument('--save_all', action="store_true",
+                    help="save full parameters of the model")
 parser.add_argument('--add_input', action="store_true")
 parser.add_argument('--add_attn', action="store_true")
 parser.add_argument('--add_softmax', action="store_true")
@@ -230,10 +233,11 @@ def train(args):
     elif args.add_ouput:
         fusion_type = "add_ouput"
 
+    opt = True if not args.from_optimus is None else False
     # logging
     experiment = f"{args.dataset}_iter{args.iterations}_as{args.adapter_size}_scalar{args.adapter_scalar}_lg-{args.latent_gen}_{fusion_type}_beta{args.beta_0}" \
                  f"_reg-{args.reg_loss}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}_enc_layer-{args.encoder_n_layer}_" \
-                 f"dec_layer-{args.decoder_n_layer}_zdim-{args.latent_size}_zrate-{args.kl_rate}_sd-{args.seed}_{now.month}.{now.day}"
+                 f"dec_layer-{args.decoder_n_layer}_zdim-{args.latent_size}_opt{opt}_zrate-{args.kl_rate}_sd-{args.seed}_{now.month}.{now.day}"
     save_folder = os.path.join(args.out_dir, experiment)
     os.makedirs(os.path.join(save_folder, 'ckpt/model'), exist_ok=True)
     os.makedirs(os.path.join(save_folder, 'ckpt/opt'), exist_ok=True)
@@ -243,7 +247,7 @@ def train(args):
     logging_file = f"{args.dataset}_init-{args.adapter_init}_ada-scalar{args.adapter_scalar}_as{args.adapter_size}_" \
                    f"lg-{args.latent_gen}_{fusion_type}_beta{args.beta_0}_reg-{args.reg_loss}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}" \
                    f"beta{args.beta_0}_enc_layer-{args.encoder_n_layer}_dec_layer-{args.decoder_n_layer}_" \
-                   f"zdim-{args.latent_size}_zrate-{args.kl_rate}_sd-{args.seed}_{now.month}.{now.day}.log"
+                   f"zdim-{args.latent_size}_opt{opt}_zrate-{args.kl_rate}_sd-{args.seed}_{now.month}.{now.day}.log"
     logging = Logger(os.path.join(save_folder, logging_file))
     # logging.basicConfig(filename=os.path.join(save_folder, 'train.log'),
     #                     level=logging.INFO, format='%(asctime)s--- %(message)s', filemode='w')
@@ -255,14 +259,6 @@ def train(args):
     # cache_dir = os.path.join(args.out_dir, 'model_cache')
     # os.makedirs(cache_dir, exist_ok=True)
     # Load pre-trained teacher tokenizer (vocabulary)
-
-    tokenizer = GPT2Tokenizer.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
-
-    # Hack to allow tokenizing longer sequences.
-    # tokenizer.max_len = int(1e12)
-    gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
-    logging.info(f'gpt2_params:{num_params(gpt2_model)}') # gpt2: 124439808
-    logging.info(f'gpt2_transformer_params:{num_params(gpt2_model.transformer)}')
 
     ## GPT2 config and adapter config
     config = GPT2Config()
@@ -314,12 +310,41 @@ def train(args):
                                mid_dim=30,
                                attn_bn=25,
                                prefix_dropout=0.1,
-                               tune_enc = args.finetune_enc,
+                               tune_enc=args.finetune_enc,
                                tune_dec=args.finetune_dec)
-    assert ada_config.ffn_option in ['sequential', 'parallel_attn', 'parallel_ffn', 'pfeiffer'], 'expect proper ffn_option'
+    assert ada_config.ffn_option in ['sequential', 'parallel_attn', 'parallel_ffn',
+                                     'pfeiffer'], 'expect proper ffn_option'
+
+    tokenizer = GPT2Tokenizer.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
+
+    # Hack to allow tokenizing longer sequences.
+    # tokenizer.max_len = int(1e12)
+    if args.from_optimus is None:
+        gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
+        tokenizer.pad_token = tokenizer.eos_token
+    else:
+        logging.info("Loading Pre-trained weights from Optimus GPT-2")
+        optimus_gpt2_state_dict = torch.load(args.from_optimus)
+        gpt2_model = GPT2LMHeadModel(config)
+        special_tokens_dict = {'pad_token': '<PAD>', 'bos_token': '<BOS>', 'eos_token': '<EOS>'}
+        num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
+        print('We have added', num_added_toks, 'tokens to GPT2')
+        # Notice: resize_token_embeddings expect to receive the
+        # full size of the new vocabulary, i.e. the length of the tokenizer.
+        gpt2_model.resize_token_embeddings(len(tokenizer))
+        assert tokenizer.pad_token == '<PAD>'
+        _ = gpt2_model.load_state_dict(optimus_gpt2_state_dict, strict=False)
+    endoftext = tokenizer.convert_tokens_to_ids(tokenizer.eos_token)
+
+    logging.info(f'gpt2_params:{num_params(gpt2_model)}') # gpt2: 124439808
+    logging.info(f'gpt2_transformer_params:{num_params(gpt2_model.transformer)}')
+
 
     AdaVAE = AdaVAEModel(config, ada_config, add_input=args.add_input, add_attn=args.add_attn, add_softmax=args.add_softmax, add_mem=args.add_mem,
                    attn_proj_vary=args.attn_proj_vary, learn_prior=args.learn_prior, reg_loss=args.reg_loss)
+    if not args.from_optimus is None:
+        AdaVAE.encoder.resize_token_embeddings(len(tokenizer))
+        AdaVAE.transformer.resize_token_embeddings(len(tokenizer))
     init_para_frompretrained(AdaVAE.transformer, gpt2_model.transformer, share_para=True)
     init_para_frompretrained(AdaVAE.encoder, gpt2_model.transformer, share_para=True)
 
@@ -396,7 +421,6 @@ def train(args):
     lr_schedule = switch_schedule(linear_schedule(args), batch_schedule[cur_b_schedule][0] / batch_schedule[-1][0],
                                   int(args.iterations * args.switch_time))
 
-    tokenizer.pad_token = tokenizer.eos_token
     # add_special_tokens_(tokenizer, AdaVAE)
     AdaVAE = AdaVAE.to(device)
     AdaVAE.train()
@@ -429,7 +453,6 @@ def train(args):
         #                                                   'optimizer_0000048.pt')))
         # gc.collect()
     logging.info('Done.')
-    endoftext = tokenizer.convert_tokens_to_ids("<|endoftext|>")
     loss_fn = nn.CrossEntropyLoss(ignore_index=endoftext, reduction='none')
     logging.info('Done.')
 
@@ -800,7 +823,8 @@ def train(args):
 
 if __name__=="__main__":
     args = parser.parse_args()
-    # args = parser.parse_args('--batch-sizes 100 --dataset yelp_data --max_length 32 --reg_loss adversarial --add_attn --latent_gen linear --adapter_size 128 --iterations 1000 --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 0.0'.split())
+    # args = parser.parse_args('--batch-sizes 100 --dataset yelp_data --max_length 32 --from_optimus ./ckpt/optimus_beta0.5/checkpoint-508523/checkpoint-decoder-508523/pytorch_model.bin '
+    #                          '--add_attn --latent_gen linear --adapter_size 128 --iterations 1000 --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 0.0'.split())
     # args = parser.parse_args('--batch-sizes 128 --max_length 25 --add_attn --adapter_size 128 --latent_size 32 '
     #                          '--decoder_n_layer 12 --encoder_n_layer 8 --adapter_init bert --attn_mode none --kl_rate 0.5'.split())
     train(args)

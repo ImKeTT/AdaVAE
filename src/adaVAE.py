@@ -539,8 +539,9 @@ def train(args):
         ppl_bpe = round(math.exp(min(logp_sum / n_words_bpe, 100)), 3)
         ppl_word = round(math.exp(min(logp_sum / n_words, 100)), 3)
         reg = reg_loss_sum / len(val_loader)
-        d_loss = d_loss_sum / len(val_loader)
-        g_loss = g_loss_sum / len(val_loader)
+        if args.reg_loss == "adversarial":
+            d_loss = d_loss_sum / len(val_loader)
+            g_loss = g_loss_sum / len(val_loader)
 
         """
         calculate mi and au Stage 2
@@ -739,7 +740,7 @@ def train(args):
                     beta = args.beta_0
                     logging.info('KL annealing restart')
 
-                if num_iters % 1 == 0:# 2000 == 0:
+                if num_iters % 2000 == 0:
                     logging.info("test set")
                     val_step(test_loader)
                     logging.info("validation set")

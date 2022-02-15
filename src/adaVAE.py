@@ -64,8 +64,9 @@ parser.add_argument('--ffn_option', type=str, default="parallel_ffn",
                     choices=['sequential', 'parallel_attn', 'parallel_ffn', 'pfeiffer'],
                     help="adapter type option")
 parser.add_argument('--latent_gen', type=str, default="averaged_attn",
-                    choices=['averaged_attn', 'linear'],
-                    help="adapter type option")
+                    help="method for encoder to latent space, averaged_attn for average attention from "
+                         "TransformerCVAE, linear for taken the first encoder token to a linear like Optimus",
+                    choices=['averaged_attn', 'linear'])
 parser.add_argument('--attn_mode', type=str, default="prefix",
                     choices=['prefix', 'adapter', 'lora', 'none'],
                     help="attention transfer type")
@@ -114,15 +115,17 @@ parser.add_argument('--cycle', type=int, default=2000)
 parser.add_argument('--load', action="store_true")
 # parser.add_argument('--label_cond', action="store_true")
 parser.add_argument('--save_all', action="store_true",
-                    help="save full parameters of the model")
+                    help="save full parameters of the model, may up to 500M+")
 parser.add_argument('--add_input', action="store_true")
 parser.add_argument('--add_attn', action="store_true")
 parser.add_argument('--add_softmax', action="store_true")
 parser.add_argument('--add_mem', action="store_true")
 parser.add_argument('--attn_proj_vary', action="store_true")
 parser.add_argument('--learn_prior', action="store_true")
-parser.add_argument('--finetune_enc', action="store_true")
-parser.add_argument('--finetune_dec', action="store_true")
+parser.add_argument('--finetune_enc', help="whether to fine-tune encoder, if True, no adapter added in encoder",
+                    action="store_true")
+parser.add_argument('--finetune_dec', help="whether to fine-tune decoder, if True, no adapter added in decoder",
+                    action="store_true")
 
 # args = parser.parse_args('test --batch-sizes 1 --seq-lens 1024 '
 #                          '--add_input --learn_prior --fp16'.split()) # wi.12.proj_vary_beta_cvae
@@ -256,9 +259,6 @@ def train(args):
     logging.info(str(args).replace(',', '\n'))
 
     logging.info('Loading models...')
-    # cache_dir = os.path.join(args.out_dir, 'model_cache')
-    # os.makedirs(cache_dir, exist_ok=True)
-    # Load pre-trained teacher tokenizer (vocabulary)
 
     ## GPT2 config and adapter config
     config = GPT2Config()
@@ -293,15 +293,15 @@ def train(args):
     }
     """
     ada_config = AdapterConfig(hidden_size=768,
-                               adapter_size=args.adapter_size,
+                               adapter_size=args.adapter_size, # adapter hidden size, larger will activate more trainable parameters
                                adapter_act='relu',
                                adapter_initializer_range=1e-2,
-                               latent_size=args.latent_size,
-                               class_num=args.class_num,
+                               latent_size=args.latent_size, # latent dimension (32 for language modeling, 728 for interpolation)
+                               class_num=args.class_num, # class number for controllable generation
                                encoder_n_layer=args.encoder_n_layer,
                                decoder_n_layer=args.decoder_n_layer,
-                               dis_emb=128,
-                               init=args.adapter_init,
+                               dis_emb=128, # hidden dimension for adversarial KLD discriminator
+                               init=args.adapter_init, # adapter initialization method
                                adapter_scalar=args.adapter_scalar,
                                ffn_option=args.ffn_option,
                                attn_mode=args.attn_mode,
@@ -763,13 +763,13 @@ def train(args):
                     beta = args.beta_0
                     logging.info('KL annealing restart')
 
-                if num_iters % 2000 == 0:
+                if num_iters % int(args.iterations / 5) == 0:
                     logging.info("test set")
                     val_step(test_loader)
                     logging.info("validation set")
                     val_step(val_loader)
 
-                if (num_iters + 1) % 20000 == 0:
+                if (num_iters + 1) % int(args.iterations / 0.5) == 0:
                     logging.info('Saving model...')
                     logging.info("Iteration completed: %d, remained %d" % (num_iters, args.iterations - num_iters))
                     logging.info("Saving model...")

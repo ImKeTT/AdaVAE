@@ -28,7 +28,7 @@ from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, AdamW, get_
 
 
 # devices = '0'
-# os.environ["CUDA_VISIBLE_DEVICES"] = '1'
+# os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 
 parser = argparse.ArgumentParser()
 
@@ -364,9 +364,9 @@ def train(args):
     logging.info(f'AdaVAE params: {adavae_params}')
 
     # fix pre-trained parameters before certain iterations
-    tuning_all_after_iters = int(args.iterations/6)
-    args.warmup = args.beta_warmup = int(args.iterations/6)
-    args.cycle = int(args.iterations/3)
+    tuning_all_after_iters = int(args.iterations / 6)
+    args.warmup = args.beta_warmup = int(args.iterations / 6)
+    args.cycle = int(args.iterations / 3)
     tuning_all = False
     for name, parameter in AdaVAE.named_parameters():
         new_pars = ['attention_weights', 'mean', 'logvar', 'input_proj', 'attn_proj', 'Nu_fc1', 'Nu_fc2',
@@ -823,8 +823,7 @@ def train(args):
 
 if __name__=="__main__":
     args = parser.parse_args()
-    # args = parser.parse_args('--batch-sizes 100 --dataset yelp_data --max_length 32 --from_optimus ./ckpt/optimus_beta0.5/checkpoint-508523/checkpoint-decoder-508523/pytorch_model.bin '
-    #                          '--add_attn --latent_gen linear --adapter_size 128 --iterations 1000 --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 0.0'.split())
+    # args = parser.parse_args('--batch-sizes 100 --dataset yelp_data --max_length 32 --add_attn --reg_loss adversarial --adapter_size 128 --iterations 9000 --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 0.0'.split())
     # args = parser.parse_args('--batch-sizes 128 --max_length 25 --add_attn --adapter_size 128 --latent_size 32 '
     #                          '--decoder_n_layer 12 --encoder_n_layer 8 --adapter_init bert --attn_mode none --kl_rate 0.5'.split())
     train(args)

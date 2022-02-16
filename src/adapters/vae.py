@@ -997,9 +997,9 @@ class Encoder(GPT2Model):
         if self.latent_type == "averaged_attn":
             representations, _ = self.averageSelfAttention(hidden_states, attention_mask.squeeze(1).squeeze(1))
         elif self.latent_type == "linear":
-            representations = self.z_linear(hidden_states[:, 0]) ## following optimus. We "pool" the model by simply taking the hidden state correspondin to the first token.
+            representations = self.z_linear(hidden_states[:, :8]).mean(-1) ## following optimus. We "pool" the model by simply taking the hidden state correspondin to the first token.
         else:
-            raise NotImplementedError("not implemented !")
+            raise NotImplementedError("Not Implemented !")
         mean = self.mean(representations)
         logvar = self.logvar(representations)
 
@@ -1427,7 +1427,7 @@ class AdaVAEModel(GPT2LMHeadModel):
             self.discriminator = nn.Sequential(nn.Linear(AdapterConfig.latent_size, AdapterConfig.dis_emb),
                                                nn.ReLU(),
                                                nn.Linear(AdapterConfig.dis_emb, 1),
-                                               nn.Softmax())
+                                               nn.Sigmoid())
 
     def reparameterize(self, mean, logvar, z=None):
         std = logvar.mul(0.5).exp()
@@ -1451,15 +1451,16 @@ class AdaVAEModel(GPT2LMHeadModel):
         :param logvar2: prior
         :return:
         """
+        bce_loss = nn.BCEWithLogitsLoss()
         z = self.reparameterize(mean1, logvar1)
         zn = self.reparameterize(mean2, logvar2) # drawn from prior
         zeros = torch.zeros(len(z), 1, device=z.device)
         ones = torch.ones(len(z), 1, device=z.device)
         ## discriminator loss
-        loss_d = F.binary_cross_entropy(self.discriminator(z.detach()), zeros) + \
-                 F.binary_cross_entropy(self.discriminator(zn), ones)
+        loss_d = bce_loss(self.discriminator(z.detach()), zeros) + \
+                 bce_loss(self.discriminator(zn), ones)
         ## generator loss
-        loss_g = F.binary_cross_entropy(self.discriminator(z), ones)
+        loss_g = bce_loss(self.discriminator(z), ones)
         return [loss_d, loss_g]
 
     def symlog_loss(self, mean, logvar):

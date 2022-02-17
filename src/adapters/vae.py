@@ -997,7 +997,7 @@ class Encoder(GPT2Model):
         if self.latent_type == "averaged_attn":
             representations, _ = self.averageSelfAttention(hidden_states, attention_mask.squeeze(1).squeeze(1))
         elif self.latent_type == "linear":
-            representations = self.z_linear(hidden_states[:, :8]).mean(-1) ## following optimus. We "pool" the model by simply taking the hidden state correspondin to the first token.
+            representations = self.z_linear(hidden_states[:, :8]).mean(1) ## following optimus. We "pool" the model by simply taking the hidden state correspondin to the first token.
         else:
             raise NotImplementedError("Not Implemented !")
         mean = self.mean(representations)

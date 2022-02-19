@@ -406,6 +406,7 @@ class Ctrl_AdaVAE(nn.Module):
         head_mask=None,
         inputs_embeds=None,):
 
+        ## label and noise for fake_z
         ones_label = torch.ones_like(cond_labels).to(dtype=torch.float32)
         zeros_label = torch.zeros_like(cond_labels).to(dtype=torch.float32)
         random_noise = torch.nn.init.normal_(torch.empty(input_ids.size(0), self.nz)).to(
@@ -418,8 +419,9 @@ class Ctrl_AdaVAE(nn.Module):
                                                 device=input_ids.device)
         prior_mean, prior_logvar = prior_mean.to(posterior_mean.dtype), prior_logvar.to(posterior_logvar.dtype)
 
+        ## real z
         latent_z = posterior_mean
-
+        ## fake z
         gen_z = self.latent_generator(random_noise)
 
         #################### Latent discriminator for sampling from a simple distribution ####################
@@ -434,6 +436,7 @@ class Ctrl_AdaVAE(nn.Module):
         loss_lsg = self.BCEWithLogitsLoss(prob_gen_z_dis, ones_label)
 
         ####################  Latent classifier for disentanglement ####################
+        ## how much label knowledge the latent space has learned
         prob_encode_z_cls = self.latent_classifier(latent_z)  # (B, n_labels)
         if self.args.label_size <= 2:
             prob_encode_z_cls = prob_encode_z_cls.squeeze(1)  # (B)
@@ -521,6 +524,8 @@ class Ctrl_AdaVAE(nn.Module):
         # acc_at_soft_cls = (pred_at_soft_cls == sampled_cond_labels).float()
 
         # Loss
+        ## adversarial encoder loss + latent loss for cls +
+        # (latent adversarial loss) + tgt_emb cls score
         loss_latent_space = (loss_encoder + loss_lsc) + (
                     loss_lsd + loss_lsg) + self.args.beta_cls * loss_cls  # + loss_at_soft_cls
         loss = loss_rec + self.args.beta_latent * loss_latent_space
@@ -558,6 +563,7 @@ class Ctrl_AdaVAE(nn.Module):
             acc_ge_cls = (pred_ge_cls == cond_labels).float()
 
             # classifier on attribute transfer generated sentences.
+            # From the current sentiment to the opposite one (two labels)
             at_emb = self.gpt_embeddings(at_generated)
             at_encode = self.conv1(at_emb.transpose(1, 2))  # (B, dim_h, seq_len)
             at_encode = torch.mean(at_encode, dim=-1)  # (B, dim_h)

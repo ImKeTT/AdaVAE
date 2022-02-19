@@ -84,6 +84,10 @@ parser.add_argument('--eval_output_dir', type=str, default='eval_out')
 parser.add_argument('--adapter_init', type=str, default='lora',
                     choices=['lora', 'bert', 'lisa', 'other'],
                     help="parameter initialization method for adapter layers.")
+parser.add_argument('--latent_gen', type=str, default="averaged_attn",
+                    help="method for encoder to latent space, averaged_attn for average attention from "
+                         "TransformerCVAE, linear for taken the first encoder token to a linear like Optimus",
+                    choices=['averaged_attn', 'linear'])
 parser.add_argument('--workers', default=2, type=int, metavar='N',
                     help='number of data loading workers')
 
@@ -94,14 +98,14 @@ parser.add_argument('--no_gpu', action="store_true")
 parser.add_argument('--fp16_opt_level', default='O1', type=str, required=False)
 
 # loss weights
-parser.add_argument('--beta_cls', default=1.00, type=float)
+parser.add_argument('--beta_cls', default=0.00, type=float)
 parser.add_argument('--beta_latent', default=1.00, type=float)
 parser.add_argument('--beta_warmup', type=int, default=1000)
 
 ## generation
-parser.add_argument('--top_k', default=5, type=int)
-parser.add_argument('--top_p', default=0.0, type=float)
-parser.add_argument('--temperature', default=0.5, type=float)
+parser.add_argument('--top_k', default=100, type=int)
+parser.add_argument('--top_p', default=0.95, type=float)
+parser.add_argument('--temperature', default=1.0, type=float)
 
 ## trigger
 parser.add_argument('--load', action="store_true")
@@ -160,6 +164,7 @@ def evaluate(args, model, tokenizer, logging, eval_dataloader, max_val_batches, 
         'pred_ge_cls': None,
         'pred_at_cls': None,
         'pred_cg_cls': None,
+        'acc_encode_z_cls': None
     }
     with tqdm(total=min(len(eval_dataloader), max_val_batches), desc="Evaluating Model") as pbar:
         for bi, batch in enumerate(eval_dataloader):
@@ -348,7 +353,9 @@ def main(args):
                                attn_bn=25,
                                prefix_dropout=0.1,
                                tune_enc=False,
-                               tune_dec=False) ## two-stage training, should employ plain GPT-2 decoder/encoder + adapters
+                               tune_dec=False,
+                               latent_gen=args.latent_gen,
+                               dis_emb=128) ## two-stage training, should employ plain GPT-2 decoder/encoder + adapters
 
     AdaVae_encoder = Encoder(config, ada_config)
     AdaVae_decoder = Decoder(config, ada_config, args.add_input, args.add_attn, args.add_mem, attn_proj_vary=False)
@@ -402,14 +409,14 @@ def main(args):
 
     # fix pre-trained parameters before certain iterations
     args.warmup = args.beta_warmup = int(args.iterations / 6)
+
+    new_pars = ['c_z', 'attention_weights', 'mean', 'logvar', 'input_proj', 'attn_proj', 'Nu_fc1', 'Nu_fc2',
+                'lm_head_rep']
+    pars_ctrl = ['label_embedding', 'latent_generator', 'linear', 'latent_classifier', 'latent_discriminator',
+                 'conv1', 'classifier']
+    new_pars.extend(pars_ctrl)
+
     for name, parameter in model.named_parameters():
-        new_pars = ['c_z', 'attention_weights', 'mean', 'logvar', 'input_proj', 'attn_proj', 'Nu_fc1', 'Nu_fc2',
-                    'lm_head_rep']
-        pars_ctrl = ['label_embedding', 'latent_generator', 'linear', 'latent_classifier', 'latent_discriminator',
-                     'conv1', 'classifier']
-        new_pars.extend(pars_ctrl)
-
-
         if not any([True if n in name else False for n in new_pars]):
             parameter.requires_grad = False
 
@@ -706,12 +713,13 @@ def main(args):
 
     ## evaluate: generate; evaluate...
     else:
+
         model.eval()
         evaluate(args, model, tokenizer, logging, val_loader, max_val_batches,
                  os.path.join(args.eval_output_dir, f"{args.dataset}_{date}"), 0, device)
 
 if __name__=="__main__":
     args = parser.parse_args()
-    # args = parser.parse_args('--batch-sizes 50 --max_length 64 --add_mem --do_train --adapter_size 128 --latent_size 32 --experiment '
-    #                          'yelp_polarity_iter6000_as128_scalar1.0_add_mem_beta1.0_reg-kld_attn_mode-none_ffn_option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-32_zrate-10.0_sd-42_2.12'.split())
+    args = parser.parse_args('--batch-sizes 50 --max_length 32 --add_attn --do_train --adapter_size 128 --latent_size 32 --experiment '
+                             'yelp_polarity_iter6000_as128_scalar1.0_add_mem_beta1.0_reg-kld_attn_mode-none_ffn_option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-32_zrate-10.0_sd-42_2.12'.split())
     main(args)

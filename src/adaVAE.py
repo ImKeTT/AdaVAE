@@ -105,6 +105,7 @@ parser.add_argument('--fp16_opt_level', default='O1', type=str, required=False)
 
 # KL cost annealing, increase beta from beta_0 to 1 in beta_warmup steps
 parser.add_argument('--beta_0', default=1.00, type=float)
+parser.add_argument('--beta_adv', default=1.00, type=float)
 parser.add_argument('--beta_warmup', type=int, default=1000)
 parser.add_argument('--kl_rate', type=float, default=0.0)
 
@@ -130,7 +131,7 @@ parser.add_argument('--finetune_dec', help="whether to fine-tune decoder, if Tru
 # args = parser.parse_args('test --batch-sizes 1 --seq-lens 1024 '
 #                          '--add_input --learn_prior --fp16'.split()) # wi.12.proj_vary_beta_cvae
 
-def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta, kl_rate, reg_loss, from_mean=True):
+def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta, beta_adv, kl_rate, reg_loss, from_mean=True):
     """
 
     :param device:
@@ -168,13 +169,13 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
     ## x_token is target tokens
     ce_loss = loss_fn(logits.view(-1, num_logits), x_tokens.view(-1))
     if reg_loss == "adversarial":
-        loss = ce_loss.mean() + beta * g_loss + d_loss
+        loss = ce_loss.mean() +  g_loss + beta_adv *d_loss + beta * kld
     else:
         loss = ce_loss.mean() + beta * max(kl_loss, kl_rate)
 
     return loss, ce_loss, regularization_loss, mean, logvar
 
-def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, loss_fn, beta, kl_rate, reg_loss_type, from_mean, model_type):
+def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, loss_fn, beta, beta_adv, kl_rate, reg_loss_type, from_mean, model_type):
     # output = []
     # if model_type == 'ae_vae_fusion':
     #     optimizer.zero_grad()
@@ -190,7 +191,7 @@ def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, loss_
 
     optimizer.zero_grad()
     loss, ce_loss, reg_loss, _, _ = compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn,
-                                          beta, kl_rate, reg_loss_type, from_mean)
+                                          beta, beta_adv, kl_rate, reg_loss_type, from_mean)
     with amp.scale_loss(loss, optimizer) as scaled_loss:
         scaled_loss.backward()
         torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), 1.0)  # max_grad_norm=1.0
@@ -238,7 +239,7 @@ def train(args):
 
     opt = True if not args.from_optimus is None else False
     # logging
-    experiment = f"{args.dataset}_iter{args.iterations}_as{args.adapter_size}_scalar{args.adapter_scalar}_lg-{args.latent_gen}_{fusion_type}_beta{args.beta_0}" \
+    experiment = f"{args.dataset}_iter{args.iterations}_as{args.adapter_size}_scalar{args.adapter_scalar}_lg-{args.latent_gen}_{fusion_type}_beta{args.beta_0}-{args.beta_adv}" \
                  f"_reg-{args.reg_loss}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}_enc_layer-{args.encoder_n_layer}_" \
                  f"dec_layer-{args.decoder_n_layer}_zdim-{args.latent_size}_opt{opt}_zrate-{args.kl_rate}_sd-{args.seed}_{now.month}.{now.day}"
     save_folder = os.path.join(args.out_dir, experiment)
@@ -248,7 +249,7 @@ def train(args):
     v_writer = SummaryWriter(os.path.join(save_folder, 'val'), flush_secs=5)
     # importlib.reload(logging)
     logging_file = f"{args.dataset}_init-{args.adapter_init}_ada-scalar{args.adapter_scalar}_as{args.adapter_size}_" \
-                   f"lg-{args.latent_gen}_{fusion_type}_beta{args.beta_0}_reg-{args.reg_loss}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}" \
+                   f"lg-{args.latent_gen}_{fusion_type}_beta{args.beta_0}-{args.beta_adv}_reg-{args.reg_loss}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}" \
                    f"beta{args.beta_0}_enc_layer-{args.encoder_n_layer}_dec_layer-{args.decoder_n_layer}_" \
                    f"zdim-{args.latent_size}_opt{opt}_zrate-{args.kl_rate}_sd-{args.seed}_{now.month}.{now.day}.log"
     logging = Logger(os.path.join(save_folder, logging_file))
@@ -494,7 +495,7 @@ def train(args):
 
                     val_loss, val_ce_loss, val_reg_loss, val_mu, val_lv = compute_loss(device, AdaVAE, val_x_ids,
                                                                                        val_input_ids, val_attention_mask,
-                                                                                       loss_fn, 1.0, 0.0, args.reg_loss)
+                                                                                       loss_fn, 1.0, 1.0, 0.0, args.reg_loss)
                     # else:
                     #     loss, ce_loss, kl_loss = compute_loss_ae(device, AdaVAE, x_mask, x_tokens, y_mask, y_tokens,
                     #                                              input_tokens, target_tokens, mask, loss_fn, 1.0)
@@ -624,7 +625,7 @@ def train(args):
 
                     val_loss, val_ce_loss, _, val_mu, val_lv = compute_loss(device, AdaVAE, val_x_ids,
                                                                                        val_input_ids, val_attention_mask,
-                                                                                       loss_fn, 1.0, 0.0, args.reg_loss)
+                                                                                       loss_fn, 1.0, 1.0, 0.0, args.reg_loss)
                 if cnt_au == 0:
                     var_sum = ((val_mu - mean_mean) ** 2).sum(dim=0)
                 else:
@@ -726,7 +727,7 @@ def train(args):
                     scheduler.step()
 
                 loss, ce_loss, regul_loss = train_step(device, AdaVAE, optimizer, x_ids, input_ids, attention_mask,
-                                                       loss_fn, beta, args.kl_rate, args.reg_loss, args.model_type, False)
+                                                       loss_fn, beta, args.beta_adv, args.kl_rate, args.reg_loss, args.model_type, False)
                 if args.reg_loss == "adversarial":
                     d_loss, g_loss, kld = regul_loss[0].item(), regul_loss[1].item(), regul_loss[2].item()
                 else:
@@ -823,7 +824,7 @@ def train(args):
 
 if __name__=="__main__":
     args = parser.parse_args()
-    # args = parser.parse_args('--batch-sizes 100 --dataset yelp_data --max_length 32 --add_attn --reg_loss adversarial --adapter_size 128 --iterations 9000 --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 0.0'.split())
+    # args = parser.parse_args('--batch-sizes 100 --dataset yelp_data --max_length 32 --latent_gen linear --add_attn --reg_loss adversarial --adapter_size 128 --iterations 9000 --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 0.0'.split())
     # args = parser.parse_args('--batch-sizes 128 --max_length 25 --add_attn --adapter_size 128 --latent_size 32 '
     #                          '--decoder_n_layer 12 --encoder_n_layer 8 --adapter_init bert --attn_mode none --kl_rate 0.5'.split())
     train(args)

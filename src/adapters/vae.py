@@ -1429,10 +1429,13 @@ class AdaVAEModel(GPT2LMHeadModel):
                                                nn.Linear(AdapterConfig.dis_emb, 1),
                                                nn.Sigmoid())
 
-    def reparameterize(self, mean, logvar, z=None):
+    def reparameterize(self, mean, logvar, z=None, nsamples=0):
         std = logvar.mul(0.5).exp()
         if z is None:
             z = torch.randn(std.size(), device=mean.device, dtype=mean.dtype)
+        if nsamples != 0:
+            mean = mean.unsqueeze(1).expand(z.size(0), nsamples, z.size(-1))
+            std = logvar.unsqueeze(1).expand(z.size(0), nsamples, z.size(-1))
         return z.mul(std) + mean
 
     def kl_loss(self, mean1, logvar1, mean2, logvar2):
@@ -1468,6 +1471,44 @@ class AdaVAEModel(GPT2LMHeadModel):
         z1 = self.reparameterize(mean, logvar)
         log_p = lambda x: -0.5 * torch.sum(torch.pow(x, 2), 1)
         return torch.abs(torch.sum(log_p(z0) - log_p(z1)))
+
+    ## Optimus PPL calculation
+    def eval_inference_dist(self, z, param):
+        """this function computes log q(z | x)
+        Args:
+            z: tensor
+                different z points that will be evaluated, with
+                shape [batch, nsamples, nz]
+        Returns: Tensor1
+            Tensor1: log q(z|x) with shape [batch, nsamples]
+        """
+
+        nz = z.size(2)
+        mu, logvar = param
+
+        # (batch_size, 1, nz)
+        mu, logvar = mu.unsqueeze(1), logvar.unsqueeze(1)
+        var = logvar.exp()
+
+        # (batch_size, nsamples, nz)
+        dev = z - mu
+
+        # (batch_size, nsamples)
+        log_density = -0.5 * ((dev ** 2) / var).sum(dim=-1) - \
+                      0.5 * (nz * math.log(2 * math.pi) + logvar.sum(-1))
+
+        return log_density
+
+    def eval_cond_ll(self, x, mask, z):
+        """compute log p(x|z)
+        """
+        x_shape = list(x.size())
+        z_shape = list(z.size())
+        if len(z_shape) == 3:
+            x = x.unsqueeze(1).repeat(1, z_shape[1], 1).contiguous().view(x_shape[0] * z_shape[1], x_shape[-1])
+            z = z.contiguous().view(x_shape[0] * z_shape[1], z_shape[-1])
+        hidden_states = self.transformer(x, attention_mask=mask, representations=z)
+        return self.lm_head(hidden_states)
 
 
     def forward(

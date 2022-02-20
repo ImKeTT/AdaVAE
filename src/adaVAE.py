@@ -44,6 +44,10 @@ parser.add_argument('--dataset', type=str, default='yelp_data', choices=['yelp_d
                     help="Dataset to use for training")
 parser.add_argument('--warmup', type=int, default=1000,
                     help="Amount of iterations to warmup, then decay. (-1 for no warmup and decay)")
+parser.add_argument('--pre_enc_iter', type=str, default=None,
+                    help="Amount of iterations for encoder pre-training, "
+                         "start for pre-training from the beginning, auto for start from totol iteration / 12"
+                         " None for no pre-training")
 
 ## mode options
 parser.add_argument('--adapter_size', type=int, default=256,
@@ -95,7 +99,8 @@ parser.add_argument('--workers', default=2, type=int, metavar='N',
 
 ## metrics
 parser.add_argument('--au_delta', type=float, default=0.01,
-                    help="threshold for activated unit calculation.")
+                    help="threshold for activated unit calculation. 0.01 as suggested in Optimus")
+parser.add_argument('--weighted_sample', type=bool, default=False)
 
 # use GPU
 parser.add_argument('--gpu', default=0, type=int)
@@ -105,12 +110,12 @@ parser.add_argument('--fp16_opt_level', default='O1', type=str, required=False)
 
 # KL cost annealing, increase beta from beta_0 to 1 in beta_warmup steps
 parser.add_argument('--beta_0', default=1.00, type=float)
-parser.add_argument('--beta_adv', default=1.00, type=float)
 parser.add_argument('--beta_warmup', type=int, default=1000)
 parser.add_argument('--kl_rate', type=float, default=0.0)
 
 # cyc_vae parameters
-parser.add_argument('--cycle', type=int, default=2000)
+parser.add_argument('--cycle', type=str, default='auto',
+                    help='const for no cycle, auto for 4 cycles, precise number for concrete cycle iteration')
 
 ## trigger
 parser.add_argument('--load', action="store_true")
@@ -131,7 +136,7 @@ parser.add_argument('--finetune_dec', help="whether to fine-tune decoder, if Tru
 # args = parser.parse_args('test --batch-sizes 1 --seq-lens 1024 '
 #                          '--add_input --learn_prior --fp16'.split()) # wi.12.proj_vary_beta_cvae
 
-def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta, beta_adv, kl_rate, reg_loss, from_mean=True):
+def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta, kl_rate, reg_loss, weighted_sample=False, from_mean=True):
     """
 
     :param device:
@@ -162,20 +167,45 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
     # Perform masking
     if att_mask is not None:
         att_mask = att_mask.type(torch.bool)
-        att_mask = att_mask.to(device)
         logits = logits.masked_select(att_mask.unsqueeze(-1))
         x_tokens = x_tokens.masked_select(att_mask)
 
     ## x_token is target tokens
     ce_loss = loss_fn(logits.view(-1, num_logits), x_tokens.view(-1))
     if reg_loss == "adversarial":
-        loss = ce_loss.mean() +  g_loss + beta_adv *d_loss + beta * kld
+        loss = ce_loss.mean() +  g_loss + beta * d_loss #+ beta * kld
     else:
         loss = ce_loss.mean() + beta * max(kl_loss, kl_rate)
 
-    return loss, ce_loss, regularization_loss, mean, logvar
+    if weighted_sample:
+        loc = torch.zeros(mean.size(-1), device=mean.device)
+        scale = torch.ones(mean.size(-1), device=mean.device)
+        prior = torch.distributions.normal.Normal(loc, scale)
+        ll_tmp, rc_tmp = [], []
+        nsamples = 1
+        for _ in range(50):
+            # (batch, nsamples, nz)
+            z = model.reparameterize(mean, logvar, nsamples=nsamples)
 
-def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, loss_fn, beta, beta_adv, kl_rate, reg_loss_type, from_mean, model_type):
+            # [batch, nsamples]
+            log_prior = prior.log_prob(z)
+            log_gen = ce_loss
+            log_infer = model.eval_inference_dist(z, (mean, logvar))
+
+            # pdb.set_trace()
+            log_gen = log_gen.unsqueeze(0).contiguous().view(z.shape[0], -1)
+
+            # pdb.set_trace()
+            rc_tmp.append(log_gen)
+            ll_tmp.append(log_gen + log_prior - log_infer)
+
+        log_prob_iw = log_sum_exp(torch.cat(ll_tmp, dim=-1), dim=-1) - math.log(nsamples)
+        log_gen_iw = torch.mean(torch.cat(rc_tmp, dim=-1), dim=-1)
+        return loss, ce_loss, regularization_loss, mean, logvar, log_prob_iw, log_gen_iw
+    else:
+        return loss, ce_loss, regularization_loss, mean, logvar
+
+def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, loss_fn, beta, kl_rate, reg_loss_type, from_mean, model_type):
     # output = []
     # if model_type == 'ae_vae_fusion':
     #     optimizer.zero_grad()
@@ -191,7 +221,7 @@ def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, loss_
 
     optimizer.zero_grad()
     loss, ce_loss, reg_loss, _, _ = compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn,
-                                          beta, beta_adv, kl_rate, reg_loss_type, from_mean)
+                                          beta, kl_rate, reg_loss_type, from_mean)
     with amp.scale_loss(loss, optimizer) as scaled_loss:
         scaled_loss.backward()
         torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), 1.0)  # max_grad_norm=1.0
@@ -201,6 +231,52 @@ def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, loss_
     # output.append((loss.item(), ce_loss.mean().item(), reg_loss.item()))
 
     return loss.item(), ce_loss.mean().item(), reg_loss
+
+def loss_iw(model, x, mask, x_tgt, loss_fn, nsamples=50, ns=1):
+    """
+    Args:
+        x: if the data is constant-length, x is the data tensor with
+            shape (batch, *). Otherwise x is a tuple that contains
+            the data tensor and length list
+    Returns: Tensor1, Tensor2, Tensor3
+        Tensor1: total loss [batch]
+        Tensor2: reconstruction loss shape [batch]
+    """
+    # (batch_size, nz)
+    mu, logvar = model.encoder(input_ids=x, attention_mask=mask)[:2]
+    loc = torch.zeros(mu.size(-1), device=mu.device)
+    scale = torch.ones(mu.size(-1), device=mu.device)
+    prior = torch.distributions.normal.Normal(loc, scale)
+
+    ##################
+    # compute KL
+    ##################
+    kld = model.kl_loss(mu, logvar, loc, torch.log(scale))
+    # pdb.set_trace()
+
+    # mu, logvar = mu.squeeze(0), logvar.squeeze(0)
+    ll_tmp, rc_tmp = [], []
+    for _ in range(int(nsamples / ns)):
+        # (batch, nsamples, nz)
+        z = model.reparameterize(mu, logvar, nsamples=ns)
+
+        # [batch, nsamples]
+        log_prior = prior.log_prob(z)
+        logits = model.eval_cond_ll(x, mask, z)
+        log_gen = loss_fn(logits.view(-1, logits.size(-1)), x_tgt.view(-1))
+        log_infer = model.eval_inference_dist(z, (mu, logvar))
+
+        # pdb.set_trace()
+        log_gen = log_gen.unsqueeze(0).contiguous().view(z.shape[0], -1)
+
+        # pdb.set_trace()
+        rc_tmp.append(log_gen)
+        ll_tmp.append(log_gen + log_prior - log_infer)
+
+    log_prob_iw = log_sum_exp(torch.cat(ll_tmp, dim=-1), dim=-1) - math.log(nsamples)
+    log_gen_iw = torch.mean(torch.cat(rc_tmp, dim=-1), dim=-1)
+
+    return log_prob_iw, log_gen_iw, kld, mu, logvar
 
 def train(args):
     now = datetime.datetime.now()
@@ -239,19 +315,20 @@ def train(args):
 
     opt = True if not args.from_optimus is None else False
     # logging
-    experiment = f"{args.dataset}_iter{args.iterations}_as{args.adapter_size}_scalar{args.adapter_scalar}_lg-{args.latent_gen}_{fusion_type}_beta{args.beta_0}-{args.beta_adv}" \
-                 f"_reg-{args.reg_loss}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}_enc_layer-{args.encoder_n_layer}_" \
-                 f"dec_layer-{args.decoder_n_layer}_zdim-{args.latent_size}_opt{opt}_zrate-{args.kl_rate}_sd-{args.seed}_{now.month}.{now.day}"
+    experiment = f"{args.dataset}_iter{args.iterations}_as{args.adapter_size}_scalar{args.adapter_scalar}_cycle-{args.cycle}_prenc-{args.pre_enc_iter}" \
+                 f"_lg-{args.latent_gen}_{fusion_type}_beta{args.beta_0}_reg-{args.reg_loss}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}_" \
+                 f"enc_layer-{args.encoder_n_layer}_dec_layer-{args.decoder_n_layer}_zdim-{args.latent_size}_opt{opt}_zrate-{args.kl_rate}_" \
+                 f"sd-{args.seed}_{now.month}.{now.day}"
     save_folder = os.path.join(args.out_dir, experiment)
     os.makedirs(os.path.join(save_folder, 'ckpt/model'), exist_ok=True)
     os.makedirs(os.path.join(save_folder, 'ckpt/opt'), exist_ok=True)
     t_writer = SummaryWriter(os.path.join(save_folder, 'train'), flush_secs=5)
     v_writer = SummaryWriter(os.path.join(save_folder, 'val'), flush_secs=5)
     # importlib.reload(logging)
-    logging_file = f"{args.dataset}_init-{args.adapter_init}_ada-scalar{args.adapter_scalar}_as{args.adapter_size}_" \
-                   f"lg-{args.latent_gen}_{fusion_type}_beta{args.beta_0}-{args.beta_adv}_reg-{args.reg_loss}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}" \
-                   f"beta{args.beta_0}_enc_layer-{args.encoder_n_layer}_dec_layer-{args.decoder_n_layer}_" \
-                   f"zdim-{args.latent_size}_opt{opt}_zrate-{args.kl_rate}_sd-{args.seed}_{now.month}.{now.day}.log"
+    logging_file = f"{args.dataset}_init-{args.adapter_init}_ada-scalar{args.adapter_scalar}_cycle-{args.cycle}_prenc-{args.pre_enc_iter}_as{args.adapter_size}_" \
+                   f"lg-{args.latent_gen}_{fusion_type}_beta{args.beta_0}_reg-{args.reg_loss}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}_" \
+                   f"beta{args.beta_0}_enc_layer-{args.encoder_n_layer}_dec_layer-{args.decoder_n_layer}_zdim-{args.latent_size}_opt{opt}_z" \
+                   f"rate-{args.kl_rate}_sd-{args.seed}_{now.month}.{now.day}.log"
     logging = Logger(os.path.join(save_folder, logging_file))
     # logging.basicConfig(filename=os.path.join(save_folder, 'train.log'),
     #                     level=logging.INFO, format='%(asctime)s--- %(message)s', filemode='w')
@@ -367,8 +444,19 @@ def train(args):
     # fix pre-trained parameters before certain iterations
     tuning_all_after_iters = int(args.iterations / 6)
     args.warmup = args.beta_warmup = int(args.iterations / 6)
-    args.cycle = int(args.iterations / 3)
-    tuning_all = False
+    cycle_num = int(args.iterations / 4) if args.cycle == 'auto' or args.cycle == 'const' else int(args.cycle)
+    if args.pre_enc_iter is None:
+        pre_enc_iter = tuning_all_after_iters #int(args.iterations / 3)
+    elif args.pre_enc_iter == "start":
+        pre_enc_iter = 0
+    elif args.pre_enc_iter == "auto":
+        pre_enc_iter = tuning_all_after_iters / 2
+    else:
+        pre_enc_iter = int(args.pre_enc_iter)
+    assert pre_enc_iter <= tuning_all_after_iters, "Encoder pre-training should start before whole model tuning."
+    ## set flag
+    tuning_all = False # tune the whole model
+    tuning_enc = False # pre-train the encoder to avoid KL Collapse
     for name, parameter in AdaVAE.named_parameters():
         new_pars = ['attention_weights', 'mean', 'logvar', 'input_proj', 'attn_proj', 'Nu_fc1', 'Nu_fc2',
                     'lm_head_rep', 'z_linear', 'discriminator', 'latent2mem', 'c_z']
@@ -454,7 +542,7 @@ def train(args):
         #                                                   'optimizer_0000048.pt')))
         # gc.collect()
     logging.info('Done.')
-    loss_fn = nn.CrossEntropyLoss(ignore_index=endoftext, reduction='none')
+    loss_fn = nn.CrossEntropyLoss(reduction='none')
     logging.info('Done.')
 
     logging.info('Begin training iterations')
@@ -475,6 +563,9 @@ def train(args):
         cnt_au = 0
         logp_sum = 0.
         reg_loss_sum = 0.
+        if args.weighted_sample:
+            reported_loss_ppl = 0.
+            reported_loss_rec = 0.
 
         if args.reg_loss == "adversarial":
             d_loss_sum = 0.
@@ -492,10 +583,20 @@ def train(args):
                     val_x_ids, val_input_ids, val_attention_mask = tokenize(val_data_dict['x'], tokenizer, device, args)
                     # val_label_onehot = F.one_hot(torch.tensor(val_data_dict['y']),
                     #                          torch.tensor(ada_config.class_num)).float().to(device)
-
-                    val_loss, val_ce_loss, val_reg_loss, val_mu, val_lv = compute_loss(device, AdaVAE, val_x_ids,
-                                                                                       val_input_ids, val_attention_mask,
-                                                                                       loss_fn, 1.0, 1.0, 0.0, args.reg_loss)
+                    if args.weighted_sample:
+                        val_loss, val_ce_loss, val_reg_loss, val_mu, val_lv, \
+                        val_loss_ppl, val_loss_rec = compute_loss(device, AdaVAE, val_x_ids,
+                                                                       val_input_ids, val_attention_mask,
+                                                                       loss_fn, 1.0, 0.0, args.reg_loss, True)
+                        val_loss_ppl, val_loss_rec = val_loss_ppl.sum(), val_loss_rec.sum()
+                        reported_loss_ppl += val_loss_ppl.item()
+                        reported_loss_rec += val_loss_rec.item()
+                    else:
+                        val_loss, val_ce_loss, val_reg_loss, val_mu, val_lv = compute_loss(device, AdaVAE, val_x_ids,
+                                                                                           val_input_ids,
+                                                                                           val_attention_mask,
+                                                                                           loss_fn, 1.0, 0.0,
+                                                                                           args.reg_loss)
                     # else:
                     #     loss, ce_loss, kl_loss = compute_loss_ae(device, AdaVAE, x_mask, x_tokens, y_mask, y_tokens,
                     #                                              input_tokens, target_tokens, mask, loss_fn, 1.0)
@@ -525,6 +626,7 @@ def train(args):
                     [t for t in re.split('("|\'|!|\?|\.|,|:| |\n|’|“|”|;|\(|\)|`)', s) if t != ' ' and t != '']) for
                     s in ctext])
                 n_words += words
+
                 if args.reg_loss == "adversarial":
                     d_loss, g_loss, kld = val_reg_loss[0].item(), val_reg_loss[1].item(), val_reg_loss[2].item()
                     reg_loss_sum += kld
@@ -559,9 +661,15 @@ def train(args):
 
         neg_entropy = neg_entropy / n_examples
         mean_mean = means_sum / cnt_au
+        if args.weighted_sample:
+            elbo = (reg_loss_sum - reported_loss_rec) / len(val_loader)
+            nll = - reported_loss_rec / len(val_loader)
+            ppl_bpe = round(math.exp(min(-reported_loss_ppl / n_words_bpe), 100), 3)
+            ppl_word = round(math.exp(min(-reported_loss_ppl / n_words), 100), 3)
+        else:
+            ppl_bpe = round(math.exp(min(logp_sum / n_words_bpe, 100)), 3)
+            ppl_word = round(math.exp(min(logp_sum / n_words, 100)), 3)
         loss_bpe = logp_sum / n_words_bpe
-        ppl_bpe = round(math.exp(min(logp_sum / n_words_bpe, 100)), 3)
-        ppl_word = round(math.exp(min(logp_sum / n_words, 100)), 3)
         reg = reg_loss_sum / len(val_loader)
         if args.reg_loss == "adversarial":
             d_loss = d_loss_sum / len(val_loader)
@@ -625,7 +733,7 @@ def train(args):
 
                     val_loss, val_ce_loss, _, val_mu, val_lv = compute_loss(device, AdaVAE, val_x_ids,
                                                                                        val_input_ids, val_attention_mask,
-                                                                                       loss_fn, 1.0, 1.0, 0.0, args.reg_loss)
+                                                                                       loss_fn, 1.0, 0.0, args.reg_loss)
                 if cnt_au == 0:
                     var_sum = ((val_mu - mean_mean) ** 2).sum(dim=0)
                 else:
@@ -653,6 +761,11 @@ def train(args):
             v_writer.add_scalar('g_loss', g_loss, num_iters)
             logging.info('val d_loss: %.4f' % d_loss)
             logging.info('val g_loss: %.4f' % g_loss)
+        if args.weighted_sample:
+            v_writer.add_scalar('elbo', elbo, num_iters)
+            v_writer.add_scalar('nll', nll, num_iters)
+            logging.info('val elbo: %.4f' % elbo)
+            logging.info('val nll : %.4f' % nll)
         logging.info('val loss    : %.4f' % loss_bpe)
         logging.info('val ppl_bpe : %.4f' % ppl_bpe)
         logging.info('val ppl_word: %.4f' % ppl_word)
@@ -693,16 +806,21 @@ def train(args):
             for i, data_dict in enumerate(train_loader):
                 x_ids, input_ids, attention_mask = tokenize(data_dict['x'], tokenizer, device, args)
 
-                if num_iters % args.cycle >= args.cycle - args.beta_warmup:
+                if (args.cycle != "const") and (num_iters % cycle_num >= cycle_num - args.beta_warmup):
                     beta = min(1.0, beta + (1. - args.beta_0) / args.beta_warmup)
+
+                if not tuning_enc and num_iters >= pre_enc_iter:
+                    encoder_unfreeze_modules = [GPT2Adapter]
+                    if ada_config.attn_mode == "prefix":
+                        encoder_unfreeze_modules.append(Prefix)
+                    AdaVAE.encoder = unfreeze_GPT2_adapters(AdaVAE.encoder, encoder_unfreeze_modules)
+                    logging.info("Start pre-training the encoder.")
+                    tuning_enc = True
 
                 if not tuning_all and num_iters >= tuning_all_after_iters:
                     decoder_unfreeze_modules = [GPT2Adapter]
-                    encoder_unfreeze_modules = [GPT2Adapter]
                     if ada_config.attn_mode == "prefix":
                         decoder_unfreeze_modules.append(Prefix)
-                        encoder_unfreeze_modules.append(Prefix)
-                    AdaVAE.encoder = unfreeze_GPT2_adapters(AdaVAE.encoder, encoder_unfreeze_modules)
                     AdaVAE.transformer = unfreeze_GPT2_adapters(AdaVAE.transformer, decoder_unfreeze_modules)
                     if args.finetune_enc or args.finetune_dec:
                         if args.finetune_enc:
@@ -711,8 +829,8 @@ def train(args):
                         if args.finetune_dec:
                             for _, parameter in AdaVAE.transformer.named_parameters():
                                 parameter.requires_grad = True
-                    for name, parameter in AdaVAE.named_parameters():
-                        print((name, parameter.requires_grad))
+                    # for name, parameter in AdaVAE.named_parameters():
+                    #     print((name, parameter.requires_grad))
                     adavae_params_with_gradients = num_params(AdaVAE)
                     logging.info(f'AdaVAE params with gradients:{adavae_params_with_gradients}')
                     if args.finetune_enc or args.finetune_dec:
@@ -727,7 +845,7 @@ def train(args):
                     scheduler.step()
 
                 loss, ce_loss, regul_loss = train_step(device, AdaVAE, optimizer, x_ids, input_ids, attention_mask,
-                                                       loss_fn, beta, args.beta_adv, args.kl_rate, args.reg_loss, args.model_type, False)
+                                                       loss_fn, beta, args.kl_rate, args.reg_loss, args.model_type, False)
                 if args.reg_loss == "adversarial":
                     d_loss, g_loss, kld = regul_loss[0].item(), regul_loss[1].item(), regul_loss[2].item()
                 else:
@@ -760,7 +878,7 @@ def train(args):
                 num_iters += 1
                 pbar.update(1)
 
-                if num_iters % args.cycle == 0:
+                if (args.cycle != "const") and (num_iters % cycle_num == 0):
                     beta = args.beta_0
                     logging.info('KL annealing restart')
 

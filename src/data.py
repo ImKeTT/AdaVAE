@@ -166,7 +166,7 @@ class ConditionalGenerationDataset(Dataset):
 
     def __getitem__(self, index: int) -> dict:
         ## add BOS and EOS special token
-        x = '<|endoftext|> ' + self.x[index] + ' <|endoftext|>'
+        x = '<|endoftext|> ' + self.x[index][:-1] + ' <|endoftext|>'
         y = self.y[index]
 
         return {'x': str(x), 'y': int(y)}

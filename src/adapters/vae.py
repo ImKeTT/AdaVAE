@@ -1429,14 +1429,14 @@ class AdaVAEModel(GPT2LMHeadModel):
                                                nn.Linear(AdapterConfig.dis_emb, 1),
                                                nn.Sigmoid())
 
-    def reparameterize(self, mean, logvar, z=None, nsamples=0):
+    def reparameterize(self, mean, logvar, z=None, ns=0):
         std = logvar.mul(0.5).exp()
         if z is None:
             z = torch.randn(std.size(), device=mean.device, dtype=mean.dtype)
-        if nsamples != 0:
-            mean = mean.unsqueeze(1).expand(z.size(0), nsamples, z.size(-1))
-            std = logvar.unsqueeze(1).expand(z.size(0), nsamples, z.size(-1))
-            z = logvar.unsqueeze(1).expand(z.size(0), nsamples, z.size(-1))
+        if ns != 0:
+            mean = mean.unsqueeze(1).expand(z.size(0), ns, z.size(-1))
+            std = logvar.unsqueeze(1).expand(z.size(0), ns, z.size(-1))
+            z = logvar.unsqueeze(1).expand(z.size(0), ns, z.size(-1))
         return z.mul(std) + mean
 
     def kl_loss(self, mean1, logvar1, mean2, logvar2):
@@ -1508,7 +1508,9 @@ class AdaVAEModel(GPT2LMHeadModel):
         if len(z_shape) == 3:
             x = x.unsqueeze(1).repeat(1, z_shape[1], 1).contiguous().view(x_shape[0] * z_shape[1], x_shape[-1])
             z = z.contiguous().view(x_shape[0] * z_shape[1], z_shape[-1])
-        hidden_states = self.transformer(x, attention_mask=mask, representations=z)
+            if not mask is None:
+                mask = mask.unsqueeze(1).repeat(1, z_shape[1], 1).contiguous().view(x_shape[0] * z_shape[1], x_shape[-1])
+        hidden_states = self.transformer(x, attention_mask=mask, representations=z)[0]
         return self.lm_head(hidden_states)
 
 

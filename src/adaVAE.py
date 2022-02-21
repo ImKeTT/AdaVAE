@@ -178,26 +178,28 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
         loss = ce_loss.mean() + beta * max(kl_loss, kl_rate)
 
     if weighted_sample:
-        loc = torch.zeros(mean.size(-1), device=mean.device)
-        scale = torch.ones(mean.size(-1), device=mean.device)
-        prior = torch.distributions.normal.Normal(loc, scale)
+        nsamples = 100
+        ns = 1
+        # loc = torch.zeros(mean.size(-1), device=device)
+        # scale = torch.ones(mean.size(-1), device=device)
         ll_tmp, rc_tmp = [], []
-        nsamples = 1
-        for _ in range(50):
+        torch_pi = torch.Tensor([np.pi]).to(device)
+        for _ in range(int(nsamples / ns)):
             # (batch, nsamples, nz)
-            z = model.reparameterize(mean, logvar, nsamples=nsamples)
+            z = model.reparameterize(mean, logvar, ns=ns)
 
             # [batch, nsamples]
-            log_prior = prior.log_prob(z)[:, :, :-1] ## [bs, ns, length - 1]
-            log_gen = ce_loss ## [bs, ns, length - 1]
+            log_prior = (-0.5 * torch.log(2*torch_pi) - z**2 / 2).sum(dim=-1) ## [bs, ns]
+            logits = model.eval_cond_ll(x=input_tokens, mask=None, z=z)
+            log_gen = - loss_fn(logits.view(-1, logits.size(-1)), x_tokens.view(-1))
+
             log_infer = model.eval_inference_dist(z, (mean, logvar)) # [bs, 1]
 
             # pdb.set_trace()
             log_gen = log_gen.unsqueeze(0).contiguous().view(z.shape[0], -1)
-            log_gen = log_gen.unsqueeze(1).expand(log_gen.size(0), nsamples, -1)
             # pdb.set_trace()
             rc_tmp.append(log_gen)
-            ll_tmp.append(log_gen + log_prior - log_infer)
+            ll_tmp.append(log_gen + log_infer - log_prior)
 
         log_prob_iw = log_sum_exp(torch.cat(ll_tmp, dim=-1), dim=-1) - math.log(nsamples)
         log_gen_iw = torch.mean(torch.cat(rc_tmp, dim=-1), dim=-1)
@@ -446,15 +448,16 @@ def train(args):
         pin_memory=True,
         drop_last=True,
         num_workers=args.workers)
+    test_bs = batch_schedule[-1][0]
     test_loader = DataLoader(
         GDataset.from_file(os.path.join(prefix_path, args.dataset, "test.txt")),
-        batch_size=batch_schedule[-1][0],
+        batch_size=test_bs,
         pin_memory=True,
         drop_last=True,
         num_workers=args.workers)
     val_loader = DataLoader(
         GDataset.from_file(os.path.join(prefix_path, args.dataset, "valid.txt")),
-        batch_size=batch_schedule[-1][0],
+        batch_size=test_bs,
         pin_memory=True,
         drop_last=True,
         num_workers=args.workers)
@@ -502,7 +505,7 @@ def train(args):
 
     logging.info('Begin training iterations')
     logging.info("Begin training iterations")
-    max_val_batches = 200  # max num. of val batches
+    max_val_batches = 20 if args.weighted_sample else 200  # max num. of val batches
     logging.info("Total iteration: %d" % args.iterations)
     e = 0  # number of epoch
     num_iters = 0
@@ -619,8 +622,9 @@ def train(args):
         if args.weighted_sample:
             elbo = (reg_loss_sum - reported_loss_rec) / len(val_loader)
             nll = - reported_loss_rec / len(val_loader)
-            ppl_bpe = round(math.exp(-reported_loss_ppl / n_words_bpe), 3)
-            ppl_word = round(math.exp(-reported_loss_ppl / n_words), 3)
+            neg_reported_ppl_loss = -reported_loss_ppl
+            ppl_bpe = round(math.exp(min(neg_reported_ppl_loss / n_words_bpe, 100)), 3)
+            ppl_word = round(math.exp(min(neg_reported_ppl_loss / n_words, 100)), 3)
         else:
             ppl_bpe = round(math.exp(min(logp_sum / n_words_bpe, 100)), 3)
             ppl_word = round(math.exp(min(logp_sum / n_words, 100)), 3)
@@ -897,7 +901,7 @@ def train(args):
 
 if __name__=="__main__":
     args = parser.parse_args()
-    # args = parser.parse_args('--batch-sizes 100 --dataset yelp_data --max_length 32 --add_attn --weighted_sample True --adapter_size 128 --reg_loss adversarial --pre_enc_iter start --iterations 200 --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 0.0'.split())
+    # args = parser.parse_args('--batch-sizes 100 --dataset yelp_data --max_length 32 --add_attn --weighted_sample --adapter_size 128 --reg_loss adversarial --pre_enc_iter start --iterations 200 --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 0.0'.split())
     # args = parser.parse_args('--batch-sizes 128 --max_length 25 --add_attn --adapter_size 128 --latent_size 32 '
     #                          '--decoder_n_layer 12 --encoder_n_layer 8 --adapter_init bert --attn_mode none --kl_rate 0.5'.split())
     train(args)

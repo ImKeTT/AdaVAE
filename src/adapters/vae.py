@@ -1436,6 +1436,7 @@ class AdaVAEModel(GPT2LMHeadModel):
         if nsamples != 0:
             mean = mean.unsqueeze(1).expand(z.size(0), nsamples, z.size(-1))
             std = logvar.unsqueeze(1).expand(z.size(0), nsamples, z.size(-1))
+            z = logvar.unsqueeze(1).expand(z.size(0), nsamples, z.size(-1))
         return z.mul(std) + mean
 
     def kl_loss(self, mean1, logvar1, mean2, logvar2):

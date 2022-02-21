@@ -28,7 +28,7 @@ from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, AdamW, get_
 
 
 # devices = '0'
-# os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+# os.environ["CUDA_VISIBLE_DEVICES"] = '1'
 
 parser = argparse.ArgumentParser()
 
@@ -100,7 +100,6 @@ parser.add_argument('--workers', default=2, type=int, metavar='N',
 ## metrics
 parser.add_argument('--au_delta', type=float, default=0.01,
                     help="threshold for activated unit calculation. 0.01 as suggested in Optimus")
-parser.add_argument('--weighted_sample', type=bool, default=False)
 
 # use GPU
 parser.add_argument('--gpu', default=0, type=int)
@@ -122,6 +121,7 @@ parser.add_argument('--load', action="store_true")
 # parser.add_argument('--label_cond', action="store_true")
 parser.add_argument('--save_all', action="store_true",
                     help="save full parameters of the model, may up to 500M+")
+parser.add_argument('--weighted_sample', action="store_true", default=False)
 parser.add_argument('--add_input', action="store_true")
 parser.add_argument('--add_attn', action="store_true")
 parser.add_argument('--add_softmax', action="store_true")
@@ -165,7 +165,7 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
     num_logits = logits.size(-1)
 
     # Perform masking
-    if att_mask is not None:
+    if att_mask is not None and not weighted_sample:
         att_mask = att_mask.type(torch.bool)
         logits = logits.masked_select(att_mask.unsqueeze(-1))
         x_tokens = x_tokens.masked_select(att_mask)
@@ -188,13 +188,13 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
             z = model.reparameterize(mean, logvar, nsamples=nsamples)
 
             # [batch, nsamples]
-            log_prior = prior.log_prob(z)
-            log_gen = ce_loss
-            log_infer = model.eval_inference_dist(z, (mean, logvar))
+            log_prior = prior.log_prob(z)[:, :, :-1] ## [bs, ns, length - 1]
+            log_gen = ce_loss ## [bs, ns, length - 1]
+            log_infer = model.eval_inference_dist(z, (mean, logvar)) # [bs, 1]
 
             # pdb.set_trace()
             log_gen = log_gen.unsqueeze(0).contiguous().view(z.shape[0], -1)
-
+            log_gen = log_gen.unsqueeze(1).expand(log_gen.size(0), nsamples, -1)
             # pdb.set_trace()
             rc_tmp.append(log_gen)
             ll_tmp.append(log_gen + log_prior - log_infer)
@@ -221,7 +221,7 @@ def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, loss_
 
     optimizer.zero_grad()
     loss, ce_loss, reg_loss, _, _ = compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn,
-                                          beta, kl_rate, reg_loss_type, from_mean)
+                                          beta, kl_rate, reg_loss_type, weighted_sample=False, from_mean=from_mean)
     with amp.scale_loss(loss, optimizer) as scaled_loss:
         scaled_loss.backward()
         torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), 1.0)  # max_grad_norm=1.0
@@ -231,52 +231,6 @@ def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, loss_
     # output.append((loss.item(), ce_loss.mean().item(), reg_loss.item()))
 
     return loss.item(), ce_loss.mean().item(), reg_loss
-
-def loss_iw(model, x, mask, x_tgt, loss_fn, nsamples=50, ns=1):
-    """
-    Args:
-        x: if the data is constant-length, x is the data tensor with
-            shape (batch, *). Otherwise x is a tuple that contains
-            the data tensor and length list
-    Returns: Tensor1, Tensor2, Tensor3
-        Tensor1: total loss [batch]
-        Tensor2: reconstruction loss shape [batch]
-    """
-    # (batch_size, nz)
-    mu, logvar = model.encoder(input_ids=x, attention_mask=mask)[:2]
-    loc = torch.zeros(mu.size(-1), device=mu.device)
-    scale = torch.ones(mu.size(-1), device=mu.device)
-    prior = torch.distributions.normal.Normal(loc, scale)
-
-    ##################
-    # compute KL
-    ##################
-    kld = model.kl_loss(mu, logvar, loc, torch.log(scale))
-    # pdb.set_trace()
-
-    # mu, logvar = mu.squeeze(0), logvar.squeeze(0)
-    ll_tmp, rc_tmp = [], []
-    for _ in range(int(nsamples / ns)):
-        # (batch, nsamples, nz)
-        z = model.reparameterize(mu, logvar, nsamples=ns)
-
-        # [batch, nsamples]
-        log_prior = prior.log_prob(z)
-        logits = model.eval_cond_ll(x, mask, z)
-        log_gen = loss_fn(logits.view(-1, logits.size(-1)), x_tgt.view(-1))
-        log_infer = model.eval_inference_dist(z, (mu, logvar))
-
-        # pdb.set_trace()
-        log_gen = log_gen.unsqueeze(0).contiguous().view(z.shape[0], -1)
-
-        # pdb.set_trace()
-        rc_tmp.append(log_gen)
-        ll_tmp.append(log_gen + log_prior - log_infer)
-
-    log_prob_iw = log_sum_exp(torch.cat(ll_tmp, dim=-1), dim=-1) - math.log(nsamples)
-    log_gen_iw = torch.mean(torch.cat(rc_tmp, dim=-1), dim=-1)
-
-    return log_prob_iw, log_gen_iw, kld, mu, logvar
 
 def train(args):
     now = datetime.datetime.now()
@@ -314,8 +268,9 @@ def train(args):
         fusion_type = "add_ouput"
 
     opt = True if not args.from_optimus is None else False
+    ws = True if args.weighted_sample else False
     # logging
-    experiment = f"{args.dataset}_iter{args.iterations}_as{args.adapter_size}_scalar{args.adapter_scalar}_cycle-{args.cycle}_prenc-{args.pre_enc_iter}" \
+    experiment = f"{args.dataset}_iter{args.iterations}_as{args.adapter_size}_scalar{args.adapter_scalar}_cycle-{args.cycle}_prenc-{args.pre_enc_iter}_ws{ws}" \
                  f"_lg-{args.latent_gen}_{fusion_type}_beta{args.beta_0}_reg-{args.reg_loss}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}_" \
                  f"enc_layer-{args.encoder_n_layer}_dec_layer-{args.decoder_n_layer}_zdim-{args.latent_size}_opt{opt}_zrate-{args.kl_rate}_" \
                  f"sd-{args.seed}_{now.month}.{now.day}"
@@ -325,8 +280,8 @@ def train(args):
     t_writer = SummaryWriter(os.path.join(save_folder, 'train'), flush_secs=5)
     v_writer = SummaryWriter(os.path.join(save_folder, 'val'), flush_secs=5)
     # importlib.reload(logging)
-    logging_file = f"{args.dataset}_init-{args.adapter_init}_ada-scalar{args.adapter_scalar}_cycle-{args.cycle}_prenc-{args.pre_enc_iter}_as{args.adapter_size}_" \
-                   f"lg-{args.latent_gen}_{fusion_type}_beta{args.beta_0}_reg-{args.reg_loss}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}_" \
+    logging_file = f"{args.dataset}_init-{args.adapter_init}_ada-scalar{args.adapter_scalar}_cycle-{args.cycle}_prenc-{args.pre_enc_iter}_as{args.adapter_size}_ws{ws}" \
+                   f"_lg-{args.latent_gen}_{fusion_type}_beta{args.beta_0}_reg-{args.reg_loss}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}_" \
                    f"beta{args.beta_0}_enc_layer-{args.encoder_n_layer}_dec_layer-{args.decoder_n_layer}_zdim-{args.latent_size}_opt{opt}_z" \
                    f"rate-{args.kl_rate}_sd-{args.seed}_{now.month}.{now.day}.log"
     logging = Logger(os.path.join(save_folder, logging_file))
@@ -542,7 +497,7 @@ def train(args):
         #                                                   'optimizer_0000048.pt')))
         # gc.collect()
     logging.info('Done.')
-    loss_fn = nn.CrossEntropyLoss(reduction='none')
+    loss_fn = nn.CrossEntropyLoss(ignore_index=endoftext, reduction='none')
     logging.info('Done.')
 
     logging.info('Begin training iterations')
@@ -664,8 +619,8 @@ def train(args):
         if args.weighted_sample:
             elbo = (reg_loss_sum - reported_loss_rec) / len(val_loader)
             nll = - reported_loss_rec / len(val_loader)
-            ppl_bpe = round(math.exp(min(-reported_loss_ppl / n_words_bpe), 100), 3)
-            ppl_word = round(math.exp(min(-reported_loss_ppl / n_words), 100), 3)
+            ppl_bpe = round(math.exp(-reported_loss_ppl / n_words_bpe), 3)
+            ppl_word = round(math.exp(-reported_loss_ppl / n_words), 3)
         else:
             ppl_bpe = round(math.exp(min(logp_sum / n_words_bpe, 100)), 3)
             ppl_word = round(math.exp(min(logp_sum / n_words, 100)), 3)
@@ -845,7 +800,7 @@ def train(args):
                     scheduler.step()
 
                 loss, ce_loss, regul_loss = train_step(device, AdaVAE, optimizer, x_ids, input_ids, attention_mask,
-                                                       loss_fn, beta, args.kl_rate, args.reg_loss, args.model_type, False)
+                                                       loss_fn, beta, args.kl_rate, args.reg_loss, False, args.model_type)
                 if args.reg_loss == "adversarial":
                     d_loss, g_loss, kld = regul_loss[0].item(), regul_loss[1].item(), regul_loss[2].item()
                 else:
@@ -942,7 +897,7 @@ def train(args):
 
 if __name__=="__main__":
     args = parser.parse_args()
-    # args = parser.parse_args('--batch-sizes 100 --dataset yelp_data --max_length 32 --latent_gen linear --add_attn --reg_loss adversarial --adapter_size 128 --iterations 9000 --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 0.0'.split())
+    # args = parser.parse_args('--batch-sizes 100 --dataset yelp_data --max_length 32 --add_attn --weighted_sample True --adapter_size 128 --reg_loss adversarial --pre_enc_iter start --iterations 200 --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 0.0'.split())
     # args = parser.parse_args('--batch-sizes 128 --max_length 25 --add_attn --adapter_size 128 --latent_size 32 '
     #                          '--decoder_n_layer 12 --encoder_n_layer 8 --adapter_init bert --attn_mode none --kl_rate 0.5'.split())
     train(args)

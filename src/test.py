@@ -37,7 +37,7 @@ parser.add_argument('--dataset', type=str, default='yelp_polarity', choices=['ye
 ## mode options
 parser.add_argument('--adapter_size', type=int, default=128,
                     help="Hidden size of GPT2 encoder/decoder adapter")
-parser.add_argument('--latent_size', type=int, default=36,
+parser.add_argument('--latent_size', type=int, default=32,
                     help="Hidden size of latent code")
 parser.add_argument('--encoder_n_layer', type=int, default=8,
                     help="attention layer number of GPT-2 encoder")
@@ -50,6 +50,10 @@ parser.add_argument('--adapter_scalar', type=str, default="1.0",
 parser.add_argument('--ffn_option', type=str, default="parallel_ffn",
                     choices=['sequential', 'parallel_attn', 'parallel_ffn', 'pfeiffer'],
                     help="adapter type option")
+parser.add_argument('--latent_gen', type=str, default="averaged_attn",
+                    help="method for encoder to latent space, averaged_attn for average attention from "
+                         "TransformerCVAE, linear for taken the first encoder token to a linear like Optimus",
+                    choices=['averaged_attn', 'linear'])
 parser.add_argument('--attn_mode', type=str, default="none",
                     choices=['prefix', 'adapter', 'lora', 'none'],
                     help="attention transfer type")
@@ -59,7 +63,7 @@ parser.add_argument('--reg_loss', type=str, default="kld",
 
 ## testing paramters
 parser.add_argument("--mode", type=str, help="Test mode", default="generate",
-                    choices=['generate', 'interpolate', 'reconstruct', 'analogy', 'cal_interpolate'])
+                    choices=['generate', 'interpolate', 'reconstruct', 'analogy', 'cal_interpolate', 'overall'])
 parser.add_argument('--batch_size', type=int, default=128,
                     help='batch size per GPU. Lists the schedule.')
 parser.add_argument('--max_length', type=int, default=30,
@@ -75,7 +79,7 @@ parser.add_argument("--max_test_batch", default=10, type=int, help="Total senten
 parser.add_argument("--num_interpolation_step", default=10, type=int)
 parser.add_argument("--degree_to_target", type=float, default="1.0")
 parser.add_argument("--max_val_batches", type=int, help="Max batch size number to test recontruction.", default=30)
-parser.add_argument("--latest_date", type=str, help="Latest date for model testing.", default="1.25")
+parser.add_argument("--latest_date", type=str, help="Latest date for model testing.", default="2.22")
 
 ## metrics
 parser.add_argument('--au_delta', type=float, default=0.01,
@@ -96,18 +100,21 @@ parser.add_argument('--cycle', type=int, default=2000)
 
 ## trigger
 parser.add_argument('--load', action="store_true")
-parser.add_argument('--label_cond', action="store_true")
 parser.add_argument('--save_all', action="store_true", help="save full parameters of the model")
 parser.add_argument('--add_input', action="store_true")
 parser.add_argument('--add_attn', action="store_true")
 parser.add_argument('--add_softmax', action="store_true")
+parser.add_argument('--add_mem', action="store_true")
 parser.add_argument('--attn_proj_vary', action="store_true")
 parser.add_argument('--finetune_enc', action="store_true")
+parser.add_argument('--finetune_dec', action="store_true")
+parser.add_argument('--weighted_sample', action="store_true")
+parser.add_argument('--learn_prior', action="store_true")
 parser.add_argument('--test_model', action="store_true")
 parser.add_argument('--do_sample', action="store_true", help="sample for reconstruction")
 
 def generate(args, model, save_dir, bsz, tokenizer, device, parallel=False, topk=100, top_p=0.95):
-    endoftext = tokenizer.convert_tokens_to_ids("<|endoftext|>")
+    endoftext = tokenizer.convert_tokens_to_ids(tokenizer.eos_token)
     if parallel or bsz <= 1000:
         sents, _ = sample_sequence(model, args.max_length,
                                    batch_size=bsz, top_k=topk, top_p=top_p,
@@ -289,7 +296,7 @@ def cal_rec(args, ada_config, model, tokenizer, device, eval_dataloader, save_di
     else:
         return rec_sents
 
-def val_step(args, model, val_loader, ada_config, tokenizer, device):
+def val_step(args, model, val_loader, ada_config, tokenizer, device, save_folder):
     model.eval()
     endoftext = tokenizer.convert_tokens_to_ids("<|endoftext|>")
     loss_fn = nn.CrossEntropyLoss(reduction='none')
@@ -299,6 +306,14 @@ def val_step(args, model, val_loader, ada_config, tokenizer, device):
     cnt_au = 0
     logp_sum = 0.0
     reg_loss_sum = 0.0
+
+    if args.weighted_sample:
+        reported_loss_ppl = 0.
+        reported_loss_rec = 0.
+
+    if args.reg_loss == "adversarial":
+        d_loss_sum = 0.
+        g_loss_sum = 0.
 
     mu_batch_list, logvar_batch_list = [], []
     neg_entropy = 0.
@@ -312,9 +327,18 @@ def val_step(args, model, val_loader, ada_config, tokenizer, device):
             with torch.no_grad():
                 val_x_ids, val_input_ids, val_attention_mask = tokenize(val_data_dict['x'], tokenizer, device, args)
 
-                val_loss, val_ce_loss, val_reg_loss, val_mu, val_lv = compute_loss(device, model, val_x_ids,
+                if args.weighted_sample:
+                    val_loss, val_ce_loss, val_reg_loss, val_mu, val_lv, \
+                    val_loss_ppl, val_loss_rec = compute_loss(device, model, val_x_ids,
+                                                              val_input_ids, val_attention_mask,
+                                                              loss_fn, 1.0, 0.0, args.reg_loss, True)
+                    val_loss_ppl, val_loss_rec = val_loss_ppl.sum(), val_loss_rec.sum()
+                    reported_loss_ppl += val_loss_ppl.item()
+                    reported_loss_rec += val_loss_rec.item()
+                else:
+                    val_loss, val_ce_loss, val_reg_loss, val_mu, val_lv = compute_loss(device, model, val_x_ids,
                                                                                    val_input_ids, val_attention_mask,
-                                                                                   loss_fn, 1.0, 0.0, args.reg_loss)
+                                                                                   loss_fn, 1.0, 0.0, args.reg_loss, weighted_sample=False, from_mean=True)
                 # else:
                 #     loss, ce_loss, kl_loss = compute_loss_ae(device, AdaVAE, x_mask, x_tokens, y_mask, y_tokens,
                 #                                              input_tokens, target_tokens, mask, loss_fn, 1.0)
@@ -332,6 +356,14 @@ def val_step(args, model, val_loader, ada_config, tokenizer, device):
             n_words_bpe += words_bpe
             logprob = val_ce_loss.mean()
 
+            if args.reg_loss == "adversarial":
+                d_loss, g_loss, kld = val_reg_loss[0].item(), val_reg_loss[1].item(), val_reg_loss[2].item()
+                reg_loss_sum += kld
+                d_loss_sum += d_loss
+                g_loss_sum += g_loss
+            else:
+                reg_loss_sum += val_reg_loss.item()
+
 
             logp_sum += logprob * words_bpe
 
@@ -345,8 +377,6 @@ def val_step(args, model, val_loader, ada_config, tokenizer, device):
                 [t for t in re.split('("|\'|!|\?|\.|,|:| |\n|’|“|”|;|\(|\)|`)', s) if t != ' ' and t != '']) for
                 s in ctext])
             n_words += words
-
-            reg_loss_sum += val_reg_loss.item()
 
             """
             calculate mutual information (mi) Stage 1
@@ -375,9 +405,21 @@ def val_step(args, model, val_loader, ada_config, tokenizer, device):
     neg_entropy = neg_entropy / n_examples
     mean_mean = means_sum / cnt_au
     loss_bpe = logp_sum / n_words_bpe
-    ppl_bpe = round(math.exp(min(logp_sum / n_words_bpe, 100)), 3)
-    ppl_word = round(math.exp(min(logp_sum / n_words, 100)), 3)
     reg = reg_loss_sum / len(val_loader)
+    latent_bound = g_loss if args.reg_loss == "adversarial" else reg_loss_sum
+    if args.weighted_sample:
+        elbo = (reg_loss_sum - reported_loss_rec) / len(val_loader)
+        nll = - reported_loss_rec / len(val_loader)
+        neg_reported_ppl_loss = -reported_loss_ppl
+        ppl_bpe = round(math.exp(min(neg_reported_ppl_loss / n_words_bpe, 100)), 3)
+        ppl_word = round(math.exp(min(neg_reported_ppl_loss / n_words, 100)), 3)
+    else:
+        elbo = (logp_sum + latent_bound) / n_words_bpe
+        ppl_bpe = round(math.exp(min((logp_sum + latent_bound) / n_words_bpe, 100)), 3)
+        ppl_word = round(math.exp(min((logp_sum + latent_bound) / n_words, 100)), 3)
+    if args.reg_loss == "adversarial":
+        d_loss = d_loss_sum / len(val_loader)
+        g_loss = g_loss_sum / len(val_loader)
 
     """
     calculate mi and au Stage 2
@@ -452,12 +494,29 @@ def val_step(args, model, val_loader, ada_config, tokenizer, device):
     au_var = var_sum / (cnt_au - 1)
     n_au = (au_var >= args.au_delta).sum().item()
 
+    with open(os.path.join(save_folder, f"test_ws{args.weighted_sample}.txt"), 'w') as f:
+        f.write('val loss    : %.4f\n' % loss_bpe)
+        f.write('val ppl_bpe : %.4f\n' % ppl_bpe)
+        f.write('val ppl_word: %.4f\n' % ppl_word)
+        f.write('val reg_loss: %.4f\n' % reg)
+        f.write('val MI      : %.4f\n' % mi)
+        f.write('val AU      : %.4f\n' % n_au)
+        if args.reg_loss == "adversarial":
+            f.write('val d_loss: %.4f\n' % d_loss)
+            f.write('val g_loss: %.4f\n' % g_loss)
+        if args.weighted_sample:
+            f.write('val nll : %.4f' % nll)
     print('val loss    : %.4f' % loss_bpe)
     print('val ppl_bpe : %.4f' % ppl_bpe)
     print('val ppl_word: %.4f' % ppl_word)
     print('val reg_loss: %.4f' % reg)
     print('val MI      : %.4f' % mi)
     print('val AU      : %.4f' % n_au)
+    if args.reg_loss == "adversarial":
+        print('val d_loss: %.4f' % d_loss)
+        print('val g_loss: %.4f' % g_loss)
+    if args.weighted_sample:
+        print('val nll : %.4f' % nll)
 
 
 def test(args):
@@ -470,6 +529,7 @@ def test(args):
     device = torch.device(args.gpu if gpu else "cpu")
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
     gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
+    tokenizer.pad_token = tokenizer.eos_token
     # randomness
     np.random.seed(args.seed)
     prng = np.random.RandomState()
@@ -486,19 +546,20 @@ def test(args):
                                class_num=args.class_num,
                                encoder_n_layer=args.encoder_n_layer,
                                decoder_n_layer=args.decoder_n_layer,
+                               dis_emb=128,  # hidden dimension for adversarial KLD discriminator
                                init=args.adapter_init,
                                adapter_scalar=args.adapter_scalar,
                                ffn_option=args.ffn_option,
                                attn_mode=args.attn_mode,
+                               latent_gen=args.latent_gen,
                                attn_option='none',
                                mid_dim=30,
                                attn_bn=25,
                                prefix_dropout=0.1,
-                               tune_enc=args.finetune_enc)
-    AdaVAE = AdaVAEModel(config, ada_config, add_input=args.add_input, add_attn=args.add_attn,
-                         add_softmax=args.add_softmax,
-                         attn_proj_vary=args.attn_proj_vary, learn_prior=False, reg_loss=args.reg_loss,
-                         label_cond=args.label_cond)
+                               tune_enc=args.finetune_enc,
+                               tune_dec=args.finetune_dec)
+    AdaVAE = AdaVAEModel(config, ada_config, add_input=args.add_input, add_attn=args.add_attn, add_softmax=args.add_softmax, add_mem=args.add_mem,
+                   attn_proj_vary=args.attn_proj_vary, learn_prior=args.learn_prior, reg_loss=args.reg_loss)
     ## load pre-trained weights
     init_para_frompretrained(AdaVAE.transformer, gpt2_model.transformer, share_para=False)
     init_para_frompretrained(AdaVAE.encoder, gpt2_model.transformer, share_para=False)
@@ -530,8 +591,9 @@ def test(args):
                 AdaVAE.load_state_dict(state)
             AdaVAE = AdaVAE.to(device)
             mode = args.mode
-            assert mode in ['generate', 'interpolate', 'reconstruct', 'analogy', 'cal_interpolate'], "get invalid test mode.."
+            assert mode in ['generate', 'interpolate', 'reconstruct', 'analogy', 'cal_interpolate', 'overall'], "get invalid test mode.."
 
+            if args.weighted_sample and mode == "overall": args.batch_size = 10
             args.dataset = '_'.join(experiment.split("_")[:2])
             test_loader = DataLoader(
                 GenerationDataset.from_file(f"../data/optimus_dataset/{args.dataset}/test.txt"),
@@ -554,8 +616,14 @@ def test(args):
                 val_step(args, AdaVAE, val_loader, ada_config, tokenizer, device)
 
             save_dir = os.path.join(save_folder, "test_texts")
-            os.makedirs(save_dir, exist_ok=True)
-            if mode == "generate":
+            if mode != "overall":
+                os.makedirs(save_dir, exist_ok=True)
+            if mode == "overall":
+                print("test set")
+                val_step(args, AdaVAE, test_loader, ada_config, tokenizer, device, save_folder)
+                print("valid set")
+                val_step(args, AdaVAE, val_loader, ada_config, tokenizer, device, save_folder)
+            elif mode == "generate":
                 generate(args, AdaVAE, save_dir, args.total_sents, tokenizer, device, topk=100, top_p=0.95)
                 print(f"Done generating {args.total_sents} for {args.class_num} class(es).")
 
@@ -607,6 +675,6 @@ def test(args):
 
 if __name__=="__main__":
     # args = parser.parse_args()
-    args = parser.parse_args('--mode reconstruct '
-                             '--out-dir out --label_cond --add_attn --total_sents 5000 --max_length 50 --batch_size 128 --do_sample'.split())
+    args = parser.parse_args('--mode overall --weighted_sample --out-dir out --add_attn --total_sents 5000 '
+                             '--max_length 50 --batch_size 10'.split())
     test(args)

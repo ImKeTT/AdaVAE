@@ -676,7 +676,7 @@ def main(args):
                     num_iters += 1
                     pbar.update(1)
 
-                    if num_iters % 5000 == 0:
+                    if (num_iters + 1) % 5000 == 0:
                         logging.info("test set")
                         val_step(test_loader)
                         logging.info("validation set")

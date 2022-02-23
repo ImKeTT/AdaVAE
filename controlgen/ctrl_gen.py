@@ -457,6 +457,7 @@ class Ctrl_AdaVAE(nn.Module):
         label_emb = self.label_embedding(cond_labels)  # (B, hidden_size)
         # past_label = self.decoder.linear(label_emb)    # (B, n_blocks * hidden_size)  # todo: use the same linear layer for latent_z for now.
         if self.args.label_size <= 2:
+            ## the opposite label for style transfer generation
             sampled_cond_labels = 1 - cond_labels
         else:
             raise NotImplementedError

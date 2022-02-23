@@ -179,27 +179,29 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
 
     if weighted_sample:
         nsamples = 100
-        ns = 1
-        # loc = torch.zeros(mean.size(-1), device=device)
-        # scale = torch.ones(mean.size(-1), device=device)
+        ns = 10
+        bs = mean.size(0)
+        loc = torch.zeros(mean.size(-1), device=device)
+        scale = torch.ones(mean.size(-1), device=device)
+        prior = torch.distributions.normal.Normal(loc, scale)
         ll_tmp, rc_tmp = [], []
-        torch_pi = torch.Tensor([np.pi]).to(device)
+        x_tokens = x_tokens.unsqueeze(1).expand(bs, ns, x_tokens.size(-1)).contiguous()
         for _ in range(int(nsamples / ns)):
             # (batch, nsamples, nz)
             z = model.reparameterize(mean, logvar, ns=ns)
 
             # [batch, nsamples]
-            log_prior = (-0.5 * torch.log(2*torch_pi) - z**2 / 2).sum(dim=-1) ## [bs, ns]
-            logits = model.eval_cond_ll(x=input_tokens, mask=None, z=z)
-            log_gen = - loss_fn(logits.view(-1, logits.size(-1)), x_tokens.view(-1))
+            log_prior = prior.log_prob(z).sum(dim=-1) ## [bs, ns]
+            logits = model.eval_cond_ll(x=input_tokens, mask=att_mask, z=z)
+            log_gen = - loss_fn(logits.view(-1, logits.size(-1)), x_tokens.view(-1)).view(bs, ns, -1).sum(-1)
 
             log_infer = model.eval_inference_dist(z, (mean, logvar)) # [bs, 1]
 
             # pdb.set_trace()
-            log_gen = log_gen.unsqueeze(0).contiguous().view(z.shape[0], -1)
+            # log_gen = log_gen.unsqueeze(0).contiguous().view(z.shape[0], -1)
             # pdb.set_trace()
             rc_tmp.append(log_gen)
-            ll_tmp.append(log_gen + log_infer - log_prior)
+            ll_tmp.append(log_gen + log_prior - log_infer)
 
         log_prob_iw = log_sum_exp(torch.cat(ll_tmp, dim=-1), dim=-1) - math.log(nsamples)
         log_gen_iw = torch.mean(torch.cat(rc_tmp, dim=-1), dim=-1)
@@ -421,7 +423,7 @@ def train(args):
         if not any([True if n in name else False for n in new_pars]):
             parameter.requires_grad = False
         print((name, parameter.requires_grad))
-    print(AdaVAE)
+    # print(AdaVAE)
     logging.info(f'AdaVAE params with gradients: {num_params(AdaVAE)}')
 
     logging.info('Setup data...')
@@ -448,7 +450,7 @@ def train(args):
         pin_memory=True,
         drop_last=True,
         num_workers=args.workers)
-    test_bs = batch_schedule[-1][0]
+    test_bs = 10 if args.weighted_sample else batch_schedule[-1][0]
     test_loader = DataLoader(
         GDataset.from_file(os.path.join(prefix_path, args.dataset, "test.txt")),
         batch_size=test_bs,
@@ -479,8 +481,9 @@ def train(args):
     ## load ckpt
     if args.load:
         logging.info('Loading model weights...')
-        state = torch.load(os.path.join(save_folder,'ckpt/model',
-                                        'model_0000048.pt'))  # , map_location='cpu' model_latest.pt
+        state = torch.load(os.path.join("./out/yelp_data_iter9000_as128_scalar1.0_cycle-auto_prenc-start_"
+                                        "wsFalse_lg-averaged_attn_add_attn_beta1.0_reg-kld_attn_mode-none_ffn_option-parallel"
+                                        "_ffn_enc_layer-8_dec_layer-12_zdim-32_optFalse_zrate-10.0_sd-42_2.22/model_latest.pt"))  # , map_location='cpu' model_latest.pt
         if 'module' in list(state.keys())[0]:  # model_path is data parallel model with attr 'module'
             state_copy = copy.copy(state)
             keys = state_copy.keys()
@@ -496,16 +499,12 @@ def train(args):
         else:
             AdaVAE.load_state_dict(state)
             del state
-        # optimizer.load_state_dict(torch.load(os.path.join(save_folder, 'ckpt/opt',
-        #                                                   'optimizer_0000048.pt')))
         # gc.collect()
-    logging.info('Done.')
+        logging.info('Done.')
     loss_fn = nn.CrossEntropyLoss(ignore_index=endoftext, reduction='none')
-    logging.info('Done.')
 
-    logging.info('Begin training iterations')
     logging.info("Begin training iterations")
-    max_val_batches = 20 if args.weighted_sample else 200  # max num. of val batches
+    max_val_batches = 200  # max num. of val batches
     logging.info("Total iteration: %d" % args.iterations)
     e = 0  # number of epoch
     num_iters = 0
@@ -619,6 +618,9 @@ def train(args):
 
         neg_entropy = neg_entropy / n_examples
         mean_mean = means_sum / cnt_au
+        loss_bpe = logp_sum / n_words_bpe # nll
+        reg = reg_loss_sum / len(val_loader)
+        latent_bound = g_loss if args.reg_loss == "adversarial" else reg_loss_sum
         if args.weighted_sample:
             elbo = (reg_loss_sum - reported_loss_rec) / len(val_loader)
             nll = - reported_loss_rec / len(val_loader)
@@ -626,10 +628,9 @@ def train(args):
             ppl_bpe = round(math.exp(min(neg_reported_ppl_loss / n_words_bpe, 100)), 3)
             ppl_word = round(math.exp(min(neg_reported_ppl_loss / n_words, 100)), 3)
         else:
-            ppl_bpe = round(math.exp(min(logp_sum / n_words_bpe, 100)), 3)
-            ppl_word = round(math.exp(min(logp_sum / n_words, 100)), 3)
-        loss_bpe = logp_sum / n_words_bpe
-        reg = reg_loss_sum / len(val_loader)
+            elbo = (logp_sum + latent_bound) / n_words_bpe
+            ppl_bpe = round(math.exp(min((logp_sum + latent_bound) / n_words_bpe, 100)), 3)
+            ppl_word = round(math.exp(min((logp_sum + latent_bound) / n_words, 100)), 3)
         if args.reg_loss == "adversarial":
             d_loss = d_loss_sum / len(val_loader)
             g_loss = g_loss_sum / len(val_loader)
@@ -710,6 +711,7 @@ def train(args):
 
 
         v_writer.add_scalar('loss', loss_bpe, num_iters)
+        v_writer.add_scalar('elbo', elbo, num_iters)
         v_writer.add_scalar('ppl_bpe', ppl_bpe, num_iters)
         v_writer.add_scalar('ppl_word', ppl_word, num_iters)
         v_writer.add_scalar('reg_loss', reg, num_iters)
@@ -721,11 +723,10 @@ def train(args):
             logging.info('val d_loss: %.4f' % d_loss)
             logging.info('val g_loss: %.4f' % g_loss)
         if args.weighted_sample:
-            v_writer.add_scalar('elbo', elbo, num_iters)
             v_writer.add_scalar('nll', nll, num_iters)
-            logging.info('val elbo: %.4f' % elbo)
             logging.info('val nll : %.4f' % nll)
         logging.info('val loss    : %.4f' % loss_bpe)
+        logging.info('val elbo    : %.4f' % elbo)
         logging.info('val ppl_bpe : %.4f' % ppl_bpe)
         logging.info('val ppl_word: %.4f' % ppl_word)
         logging.info('val reg_loss: %.4f' % reg)
@@ -841,7 +842,8 @@ def train(args):
                     beta = args.beta_0
                     logging.info('KL annealing restart')
 
-                if num_iters % int(args.iterations / 5) == 0:
+                log_interval = 2000 if args.iterations <= 10000 else int(args.iterations / 5)
+                if num_iters % log_interval == 0:
                     logging.info("test set")
                     val_step(test_loader)
                     logging.info("validation set")
@@ -901,7 +903,7 @@ def train(args):
 
 if __name__=="__main__":
     args = parser.parse_args()
-    # args = parser.parse_args('--batch-sizes 100 --dataset yelp_data --max_length 32 --add_attn --weighted_sample --adapter_size 128 --reg_loss adversarial --pre_enc_iter start --iterations 200 --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 0.0'.split())
+    # args = parser.parse_args('--batch-sizes 100 --load --dataset yelp_data --max_length 32 --add_attn --weighted_sample --adapter_size 128 --reg_loss adversarial --pre_enc_iter start --iterations 200 --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 0.0'.split())
     # args = parser.parse_args('--batch-sizes 128 --max_length 25 --add_attn --adapter_size 128 --latent_size 32 '
     #                          '--decoder_n_layer 12 --encoder_n_layer 8 --adapter_init bert --attn_mode none --kl_rate 0.5'.split())
     train(args)

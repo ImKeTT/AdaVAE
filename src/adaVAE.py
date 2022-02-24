@@ -33,7 +33,7 @@ from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, AdamW, get_
 parser = argparse.ArgumentParser()
 
 # Default parameters are set based on single GPU training
-parser.add_argument('--lr', type=float, default=5e-5)
+parser.add_argument('--lr', type=float, default=5e-4)
 parser.add_argument("--seed", type=int, default=42)
 
 # parser.add_argument('--data_type', type=str, default='t1', choices=['t' + str(i) for i in range(9)], help="t: type")
@@ -842,7 +842,7 @@ def train(args):
                     beta = args.beta_0
                     logging.info('KL annealing restart')
 
-                log_interval = 2000 if args.iterations <= 10000 else int(args.iterations / 5)
+                log_interval = 3000 if args.iterations <= 30000 else int(args.iterations / 5)
                 if num_iters % log_interval == 0:
                     logging.info("test set")
                     val_step(test_loader)

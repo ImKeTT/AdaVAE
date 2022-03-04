@@ -335,11 +335,12 @@ class GPT2Adapter(nn.Module):
                 nn.init.zeros_(self.up_project.weight)
                 nn.init.zeros_(self.down_project.bias)
                 nn.init.zeros_(self.up_project.bias)
-        else:
-            nn.init.normal_(self.up_project.weight, std=AdapterConfig.adapter_initializer_range)
-            nn.init.zeros_(self.up_project.bias)
-            nn.init.normal_(self.down_project.weight, std=AdapterConfig.adapter_initializer_range)
-            nn.init.zeros_(self.down_project.bias)
+        elif AdapterConfig.init == "bert_adapter":
+            with torch.no_grad():
+                nn.init.normal_(self.up_project.weight, std=AdapterConfig.adapter_initializer_range)
+                nn.init.zeros_(self.up_project.bias)
+                nn.init.normal_(self.down_project.weight, std=AdapterConfig.adapter_initializer_range)
+                nn.init.zeros_(self.down_project.bias)
 
         if AdapterConfig.adapter_scalar=="learnable_scalar":
             self.scale = nn.Parameter(torch.ones(1))
@@ -1431,18 +1432,17 @@ class AdaVAEModel(GPT2LMHeadModel):
 
     def reparameterize(self, mean, logvar, z=None, ns=0):
         std = logvar.mul(0.5).exp()
+        if ns != 0:
+            mean = mean.unsqueeze(1).expand(mean.size(0), ns, mean.size(-1))
+            std = logvar.unsqueeze(1).expand(mean.size(0), ns, mean.size(-1))
         if z is None:
             z = torch.randn(std.size(), device=mean.device, dtype=mean.dtype)
-        if ns != 0:
-            mean = mean.unsqueeze(1).expand(z.size(0), ns, z.size(-1))
-            std = logvar.unsqueeze(1).expand(z.size(0), ns, z.size(-1))
-            z = logvar.unsqueeze(1).expand(z.size(0), ns, z.size(-1))
         return z.mul(std) + mean
 
     def kl_loss(self, mean1, logvar1, mean2, logvar2):
         exponential = logvar1 - logvar2 - torch.pow(mean1 - mean2, 2) / logvar2.exp() - torch.exp(logvar1 - logvar2) + 1
         result = -0.5 * torch.sum(exponential, tuple(range(1, len(exponential.shape))))
-        return result.mean()
+        return result
 
     def adv_loss(self, mean1, logvar1, mean2, logvar2):
         """

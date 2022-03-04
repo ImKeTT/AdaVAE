@@ -111,6 +111,7 @@ parser.add_argument('--fp16_opt_level', default='O1', type=str, required=False)
 parser.add_argument('--beta_0', default=1.00, type=float)
 parser.add_argument('--beta_warmup', type=int, default=1000)
 parser.add_argument('--kl_rate', type=float, default=0.0)
+parser.add_argument('--fb', type=int, default=1, choices=[1, 2])
 
 # cyc_vae parameters
 parser.add_argument('--cycle', type=str, default='auto',
@@ -136,7 +137,7 @@ parser.add_argument('--finetune_dec', help="whether to fine-tune decoder, if Tru
 # args = parser.parse_args('test --batch-sizes 1 --seq-lens 1024 '
 #                          '--add_input --learn_prior --fp16'.split()) # wi.12.proj_vary_beta_cvae
 
-def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta, kl_rate, reg_loss, weighted_sample=False, from_mean=True):
+def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta, kl_rate, reg_loss, weighted_sample=False, from_mean=True, fb=1):
     """
 
     :param device:
@@ -175,7 +176,12 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
     if reg_loss == "adversarial":
         loss = ce_loss.mean() +  g_loss + beta * d_loss #+ beta * kld
     else:
-        loss = ce_loss.mean() + beta * max(kl_loss, kl_rate)
+        if fb == 1:
+            loss = ce_loss.mean() + beta * max(kl_loss.mean(), kl_rate)
+        elif fb == 2:
+            mask = (kl_loss > kl_rate).float().to(device)
+            kl_loss = kl_loss * mask + (1 - mask) * torch.full(kl_loss.size(), kl_rate).to(device)
+            loss = ce_loss.mean() + beta * kl_loss.mean()
 
     if weighted_sample:
         nsamples = 100
@@ -192,16 +198,17 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
 
             # [batch, nsamples]
             log_prior = prior.log_prob(z).sum(dim=-1) ## [bs, ns]
-            logits = model.eval_cond_ll(x=input_tokens, mask=att_mask, z=z)
+            logits = model.eval_cond_ll(x=input_tokens, mask=None, z=z)
             log_gen = - loss_fn(logits.view(-1, logits.size(-1)), x_tokens.view(-1)).view(bs, ns, -1).sum(-1)
 
-            log_infer = model.eval_inference_dist(z, (mean, logvar)) # [bs, 1]
+            log_infer = model.eval_inference_dist(z, (mean, logvar)) # [bs, ns]
 
             # pdb.set_trace()
             # log_gen = log_gen.unsqueeze(0).contiguous().view(z.shape[0], -1)
             # pdb.set_trace()
             rc_tmp.append(log_gen)
-            ll_tmp.append(log_gen + log_prior - log_infer)
+            ll_tmp.append(log_gen - log_prior + log_infer)
+            # weighted_KLD.append(log_prior - log_infer)
 
         log_prob_iw = log_sum_exp(torch.cat(ll_tmp, dim=-1), dim=-1) - math.log(nsamples)
         log_gen_iw = torch.mean(torch.cat(rc_tmp, dim=-1), dim=-1)
@@ -209,7 +216,7 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
     else:
         return loss, ce_loss, regularization_loss, mean, logvar
 
-def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, loss_fn, beta, kl_rate, reg_loss_type, from_mean, model_type):
+def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, loss_fn, beta, kl_rate, reg_loss_type, from_mean, fb, model_type):
     # output = []
     # if model_type == 'ae_vae_fusion':
     #     optimizer.zero_grad()
@@ -225,7 +232,7 @@ def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, loss_
 
     optimizer.zero_grad()
     loss, ce_loss, reg_loss, _, _ = compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn,
-                                          beta, kl_rate, reg_loss_type, weighted_sample=False, from_mean=from_mean)
+                                          beta, kl_rate, reg_loss_type, weighted_sample=False, from_mean=from_mean, fb=fb)
     with amp.scale_loss(loss, optimizer) as scaled_loss:
         scaled_loss.backward()
         torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), 1.0)  # max_grad_norm=1.0
@@ -234,7 +241,7 @@ def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, loss_
     optimizer.step()
     # output.append((loss.item(), ce_loss.mean().item(), reg_loss.item()))
 
-    return loss.item(), ce_loss.mean().item(), reg_loss
+    return loss.item(), ce_loss.mean().item(), reg_loss.mean()
 
 def train(args):
     now = datetime.datetime.now()
@@ -276,7 +283,7 @@ def train(args):
     # logging
     experiment = f"{args.dataset}_iter{args.iterations}_as{args.adapter_size}_scalar{args.adapter_scalar}_cycle-{args.cycle}_prenc-{args.pre_enc_iter}_ws{ws}" \
                  f"_lg-{args.latent_gen}_{fusion_type}_beta{args.beta_0}_reg-{args.reg_loss}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}_" \
-                 f"enc_layer-{args.encoder_n_layer}_dec_layer-{args.decoder_n_layer}_zdim-{args.latent_size}_opt{opt}_zrate-{args.kl_rate}_" \
+                 f"enc_layer-{args.encoder_n_layer}_dec_layer-{args.decoder_n_layer}_zdim-{args.latent_size}_opt{opt}_zrate-{args.kl_rate}_fb-{args.fb}" \
                  f"sd-{args.seed}_{now.month}.{now.day}"
     save_folder = os.path.join(args.out_dir, experiment)
     os.makedirs(os.path.join(save_folder, 'ckpt/model'), exist_ok=True)
@@ -287,7 +294,7 @@ def train(args):
     logging_file = f"{args.dataset}_init-{args.adapter_init}_ada-scalar{args.adapter_scalar}_cycle-{args.cycle}_prenc-{args.pre_enc_iter}_as{args.adapter_size}_ws{ws}" \
                    f"_lg-{args.latent_gen}_{fusion_type}_beta{args.beta_0}_reg-{args.reg_loss}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}_" \
                    f"beta{args.beta_0}_enc_layer-{args.encoder_n_layer}_dec_layer-{args.decoder_n_layer}_zdim-{args.latent_size}_opt{opt}_z" \
-                   f"rate-{args.kl_rate}_sd-{args.seed}_{now.month}.{now.day}.log"
+                   f"rate-{args.kl_rate}_fb-{args.fb}_sd-{args.seed}_{now.month}.{now.day}.log"
     logging = Logger(os.path.join(save_folder, logging_file))
     # logging.basicConfig(filename=os.path.join(save_folder, 'train.log'),
     #                     level=logging.INFO, format='%(asctime)s--- %(message)s', filemode='w')
@@ -382,8 +389,8 @@ def train(args):
     if not args.from_optimus is None:
         AdaVAE.encoder.resize_token_embeddings(len(tokenizer))
         AdaVAE.transformer.resize_token_embeddings(len(tokenizer))
-    init_para_frompretrained(AdaVAE.transformer, gpt2_model.transformer, share_para=True)
-    init_para_frompretrained(AdaVAE.encoder, gpt2_model.transformer, share_para=True)
+    init_para_frompretrained(AdaVAE.transformer, gpt2_model.transformer, share_para=False)
+    init_para_frompretrained(AdaVAE.encoder, gpt2_model.transformer, share_para=False)
 
     ## freeze all prarameters excpect the ones in adapters
     # AdaVAE = freeze_all_parameters(AdaVAE)
@@ -481,9 +488,8 @@ def train(args):
     ## load ckpt
     if args.load:
         logging.info('Loading model weights...')
-        state = torch.load(os.path.join("./out/yelp_data_iter9000_as128_scalar1.0_cycle-auto_prenc-start_"
-                                        "wsFalse_lg-averaged_attn_add_attn_beta1.0_reg-kld_attn_mode-none_ffn_option-parallel"
-                                        "_ffn_enc_layer-8_dec_layer-12_zdim-32_optFalse_zrate-10.0_sd-42_2.22/model_latest.pt"))  # , map_location='cpu' model_latest.pt
+        state = torch.load(os.path.join("./out/penn_data_iter20000_as128_scalar1.0_cycle-auto_prenc-start_wsFalse_lg-averaged_attn_add_attn_beta1.0_reg-kld_attn_"
+                                        "mode-none_ffn_option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-32_optFalse_zrate-10.0_sd-42_2.26/model_latest.pt"))  # , map_location='cpu' model_latest.pt
         if 'module' in list(state.keys())[0]:  # model_path is data parallel model with attr 'module'
             state_copy = copy.copy(state)
             keys = state_copy.keys()
@@ -504,7 +510,7 @@ def train(args):
     loss_fn = nn.CrossEntropyLoss(ignore_index=endoftext, reduction='none')
 
     logging.info("Begin training iterations")
-    max_val_batches = 200  # max num. of val batches
+    max_val_batches = 20  # max num. of val batches
     logging.info("Total iteration: %d" % args.iterations)
     e = 0  # number of epoch
     num_iters = 0
@@ -586,11 +592,11 @@ def train(args):
 
                 if args.reg_loss == "adversarial":
                     d_loss, g_loss, kld = val_reg_loss[0].item(), val_reg_loss[1].item(), val_reg_loss[2].item()
-                    reg_loss_sum += kld
+                    reg_loss_sum += kld.sum()
                     d_loss_sum += d_loss
                     g_loss_sum += g_loss
                 else:
-                    reg_loss_sum += val_reg_loss.item()
+                    reg_loss_sum += val_reg_loss.sum().item()
 
                 """
                 calculate mutual information (mi) Stage 1
@@ -805,7 +811,7 @@ def train(args):
                     scheduler.step()
 
                 loss, ce_loss, regul_loss = train_step(device, AdaVAE, optimizer, x_ids, input_ids, attention_mask,
-                                                       loss_fn, beta, args.kl_rate, args.reg_loss, False, args.model_type)
+                                                       loss_fn, beta, args.kl_rate, args.reg_loss, False, args.fb, args.model_type)
                 if args.reg_loss == "adversarial":
                     d_loss, g_loss, kld = regul_loss[0].item(), regul_loss[1].item(), regul_loss[2].item()
                 else:
@@ -903,7 +909,7 @@ def train(args):
 
 if __name__=="__main__":
     args = parser.parse_args()
-    # args = parser.parse_args('--batch-sizes 100 --load --dataset yelp_data --max_length 32 --add_attn --weighted_sample --adapter_size 128 --reg_loss adversarial --pre_enc_iter start --iterations 200 --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 0.0'.split())
+    # args = parser.parse_args('--batch-sizes 100 --load --dataset penn_data --max_length 32 --add_attn --weighted_sample --adapter_size 128 --pre_enc_iter start --iterations 200 --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init other --attn_mode none --kl_rate 10.0'.split())
     # args = parser.parse_args('--batch-sizes 128 --max_length 25 --add_attn --adapter_size 128 --latent_size 32 '
     #                          '--decoder_n_layer 12 --encoder_n_layer 8 --adapter_init bert --attn_mode none --kl_rate 0.5'.split())
     train(args)

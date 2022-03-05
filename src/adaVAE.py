@@ -174,14 +174,14 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
     ## x_token is target tokens
     ce_loss = loss_fn(logits.view(-1, num_logits), x_tokens.view(-1))
     if reg_loss == "adversarial":
-        loss = ce_loss.mean() +  g_loss + beta * d_loss #+ beta * kld
+        loss = ce_loss.mean() + g_loss + beta * d_loss #+ beta * kld
     else:
         if fb == 1:
             loss = ce_loss.mean() + beta * max(kl_loss.mean(), kl_rate)
         elif fb == 2:
             mask = (kl_loss > kl_rate).float().to(device)
             kl_loss = kl_loss * mask + (1 - mask) * torch.full(kl_loss.size(), kl_rate).to(device)
-            loss = ce_loss.mean() + beta * kl_loss.mean()
+            loss = (ce_loss.mean() + beta * kl_loss).mean()
 
     if weighted_sample:
         nsamples = 100
@@ -198,7 +198,7 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
 
             # [batch, nsamples]
             log_prior = prior.log_prob(z).sum(dim=-1) ## [bs, ns]
-            logits = model.eval_cond_ll(x=input_tokens, mask=None, z=z)
+            logits = model.eval_cond_ll(x=input_tokens, mask=att_mask, z=z)
             log_gen = - loss_fn(logits.view(-1, logits.size(-1)), x_tokens.view(-1)).view(bs, ns, -1).sum(-1)
 
             log_infer = model.eval_inference_dist(z, (mean, logvar)) # [bs, ns]
@@ -389,8 +389,8 @@ def train(args):
     if not args.from_optimus is None:
         AdaVAE.encoder.resize_token_embeddings(len(tokenizer))
         AdaVAE.transformer.resize_token_embeddings(len(tokenizer))
-    init_para_frompretrained(AdaVAE.transformer, gpt2_model.transformer, share_para=False)
-    init_para_frompretrained(AdaVAE.encoder, gpt2_model.transformer, share_para=False)
+    init_para_frompretrained(AdaVAE.transformer, gpt2_model.transformer, share_para=True)
+    init_para_frompretrained(AdaVAE.encoder, gpt2_model.transformer, share_para=True)
 
     ## freeze all prarameters excpect the ones in adapters
     # AdaVAE = freeze_all_parameters(AdaVAE)
@@ -510,7 +510,7 @@ def train(args):
     loss_fn = nn.CrossEntropyLoss(ignore_index=endoftext, reduction='none')
 
     logging.info("Begin training iterations")
-    max_val_batches = 20  # max num. of val batches
+    max_val_batches = 200  # max num. of val batches
     logging.info("Total iteration: %d" % args.iterations)
     e = 0  # number of epoch
     num_iters = 0
@@ -591,12 +591,12 @@ def train(args):
                 n_words += words
 
                 if args.reg_loss == "adversarial":
-                    d_loss, g_loss, kld = val_reg_loss[0].item(), val_reg_loss[1].item(), val_reg_loss[2].item()
-                    reg_loss_sum += kld.sum()
+                    d_loss, g_loss, kld = val_reg_loss[0].item(), val_reg_loss[1].item(), val_reg_loss[2]
+                    reg_loss_sum += kld.mean().item()
                     d_loss_sum += d_loss
                     g_loss_sum += g_loss
                 else:
-                    reg_loss_sum += val_reg_loss.sum().item()
+                    reg_loss_sum += val_reg_loss.mean().item()
 
                 """
                 calculate mutual information (mi) Stage 1
@@ -622,14 +622,15 @@ def train(args):
                     break
                 pbar.update(1)
 
+        val_loader_len = min(len(val_loader), max_val_batches)
         neg_entropy = neg_entropy / n_examples
         mean_mean = means_sum / cnt_au
         loss_bpe = logp_sum / n_words_bpe # nll
-        reg = reg_loss_sum / len(val_loader)
+        reg = reg_loss_sum / val_loader_len
         latent_bound = g_loss if args.reg_loss == "adversarial" else reg_loss_sum
         if args.weighted_sample:
-            elbo = (reg_loss_sum - reported_loss_rec) / len(val_loader)
-            nll = - reported_loss_rec / len(val_loader)
+            elbo = (reg_loss_sum - reported_loss_rec) / val_loader_len
+            nll = - reported_loss_rec / val_loader_len
             neg_reported_ppl_loss = -reported_loss_ppl
             ppl_bpe = round(math.exp(min(neg_reported_ppl_loss / n_words_bpe, 100)), 3)
             ppl_word = round(math.exp(min(neg_reported_ppl_loss / n_words, 100)), 3)
@@ -638,8 +639,8 @@ def train(args):
             ppl_bpe = round(math.exp(min((logp_sum + latent_bound) / n_words_bpe, 100)), 3)
             ppl_word = round(math.exp(min((logp_sum + latent_bound) / n_words, 100)), 3)
         if args.reg_loss == "adversarial":
-            d_loss = d_loss_sum / len(val_loader)
-            g_loss = g_loss_sum / len(val_loader)
+            d_loss = d_loss_sum / val_loader_len
+            g_loss = g_loss_sum / val_loader_len
 
         """
         calculate mi and au Stage 2

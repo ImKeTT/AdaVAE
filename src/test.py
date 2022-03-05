@@ -79,7 +79,7 @@ parser.add_argument("--max_test_batch", default=10, type=int, help="Total senten
 parser.add_argument("--num_interpolation_step", default=10, type=int)
 parser.add_argument("--degree_to_target", type=float, default="1.0")
 parser.add_argument("--max_val_batches", type=int, help="Max batch size number to test recontruction.", default=30)
-parser.add_argument("--latest_date", type=str, help="Latest date for model testing.", default="2.22")
+parser.add_argument("--latest_date", type=str, help="Latest date for model testing.", default="2.26")
 
 ## metrics
 parser.add_argument('--au_delta', type=float, default=0.01,
@@ -547,7 +547,7 @@ def test(args):
                                encoder_n_layer=args.encoder_n_layer,
                                decoder_n_layer=args.decoder_n_layer,
                                dis_emb=128,  # hidden dimension for adversarial KLD discriminator
-                               init=args.adapter_init,
+                               init='other',
                                adapter_scalar=args.adapter_scalar,
                                ffn_option=args.ffn_option,
                                attn_mode=args.attn_mode,

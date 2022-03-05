@@ -551,7 +551,7 @@ def train(args):
                         val_loss_ppl, val_loss_rec = compute_loss(device, AdaVAE, val_x_ids,
                                                                        val_input_ids, val_attention_mask,
                                                                        loss_fn, 1.0, 0.0, args.reg_loss, True)
-                        val_loss_ppl, val_loss_rec = val_loss_ppl.sum(), val_loss_rec.sum()
+                        val_loss_ppl, val_loss_rec = val_loss_ppl.sum(), val_loss_rec.mean()
                         reported_loss_ppl += val_loss_ppl.item()
                         reported_loss_rec += val_loss_rec.item()
                     else:

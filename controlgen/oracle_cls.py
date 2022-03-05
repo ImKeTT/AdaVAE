@@ -101,10 +101,10 @@ def train(args):
     torch.random.manual_seed(args.seed)
     if gpu: torch.cuda.manual_seed(args.seed); torch.cuda.manual_seed_all(args.seed)
 
-    logging_file = "oracle_cls.log"
-    logging = Logger(os.path.join(args.out_dir, logging_file))
     save_folder = os.path.join(args.out_dir, "oracle_cls")
     os.makedirs(save_folder, exist_ok=True)
+    logging_file = "oracle_cls.log"
+    logging = Logger(os.path.join(args.out_dir, logging_file))
     t_writer = SummaryWriter(os.path.join(save_folder, 'train'), flush_secs=5)
 
     logging.info('\n*******************************************************************************\n')
@@ -154,8 +154,8 @@ def train(args):
                     val_labels = torch.tensor(val_data_dict['y']).to(device)
 
                     val_loss_cls, val_acc_cls = model(val_input_ids, val_labels)
-                    val_loss_list.append(val_loss_cls)
-                    val_acc_list.append(val_acc_cls)
+                    val_loss_list.append(val_loss_cls.item())
+                    val_acc_list.append(val_acc_cls.mean().item())
         val_loss = np.mean(val_loss_list)
         val_acc = np.mean(val_acc_list)
         val_loss_std = np.std(val_loss_list)
@@ -186,7 +186,8 @@ def train(args):
                 cond_labels = torch.tensor(data_dict['y']).to(device)
 
                 loss_cls, acc_cls = model(input_ids, cond_labels)
-                loss = model.step(loss_cls)
+                loss = model.step(optimizer, loss_cls)
+                acc_cls = acc_cls.mean()
 
                 t_writer.add_scalar('loss', loss, num_iters)
                 t_writer.add_scalar('acc', acc_cls, num_iters)

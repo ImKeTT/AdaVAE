@@ -384,7 +384,6 @@ class Ctrl_AdaVAE(nn.Module):
 
         self.CrossEntropyLoss = nn.CrossEntropyLoss()
         self.BCEWithLogitsLoss = nn.BCEWithLogitsLoss()
-        self.logitsCrossEntropyLoss = nn.CrossEntropyLoss(ignore_index=eos_token, reduction="none")
 
         # add code here
         self.add_input = add_input
@@ -423,6 +422,7 @@ class Ctrl_AdaVAE(nn.Module):
         latent_z = posterior_mean
         ## fake z
         gen_z = self.latent_generator(random_noise)
+        # gen_z = random_noise
 
         #################### Latent discriminator for sampling from a simple distribution ####################
         prob_encode_z_dis = self.latent_discriminator(latent_z).squeeze(1).float()  # (B)
@@ -490,7 +490,7 @@ class Ctrl_AdaVAE(nn.Module):
         hidden_states = outputs[0]
         lm_logits = self.lm_head(hidden_states)
         num_logits = lm_logits.size(-1)
-        loss_rec = self.logitsCrossEntropyLoss(lm_logits.view(-1, num_logits), tgt_seq_ids.view(-1))
+        loss_rec = self.CrossEntropyLoss(lm_logits.view(-1, num_logits), tgt_seq_ids.view(-1))
 
         ####################  Train a classifier in the observation space ####################
         tgt_emb = self.gpt_embeddings(tgt_seq_ids)

@@ -177,7 +177,7 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
         loss = ce_loss.mean() + g_loss + beta * d_loss #+ beta * kld
     else:
         if fb == 1:
-            loss = ce_loss.mean() + beta * max(kl_loss.mean(), kl_rate)
+            loss = ce_loss.mean() + beta * max(kl_loss.sum(dim=1), kl_rate)
         elif fb == 2:
             kl_mask = (kl_loss > kl_rate).float().to(device)
             kl_loss = (kl_mask * kl_loss).sum(dim=1)
@@ -815,9 +815,9 @@ def train(args):
 
                 if args.warmup != -1:
                     scheduler.step()
-
+                kl_rate = args.kl_rate / args.latent_size if args.fb == 3 else args.kl_rate
                 loss, ce_loss, regul_loss = train_step(device, AdaVAE, optimizer, x_ids, input_ids, attention_mask,
-                                                       loss_fn, beta, args.kl_rate, args.reg_loss, False, args.fb, args.model_type)
+                                                       loss_fn, beta, kl_rate, args.reg_loss, False, args.fb, args.model_type)
                 if args.reg_loss == "adversarial":
                     d_loss, g_loss, kld = regul_loss[0].item(), regul_loss[1].item(), regul_loss[2].item()
                 else:

@@ -179,9 +179,11 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
         if fb == 1:
             loss = ce_loss.mean() + beta * max(kl_loss.mean(), kl_rate)
         elif fb == 2:
-            mask = (kl_loss > kl_rate).float().to(device)
-            kl_loss = kl_loss * mask + (1 - mask) * torch.full(kl_loss.size(), kl_rate).to(device)
-            loss = (ce_loss.mean() + beta * kl_loss).mean()
+            kl_mask = (kl_loss > kl_rate).float().to(device)
+            kl_loss = (kl_mask * kl_loss).sum(dim=1)
+            # mask = (kl_loss > kl_rate).float().to(device)
+            # kl_loss = kl_loss * mask + (1 - mask) * torch.full(kl_loss.size(), kl_rate).to(device)
+            loss = ce_loss.mean() + beta * kl_loss
 
     if weighted_sample:
         nsamples = 100
@@ -759,7 +761,8 @@ def train(args):
 
         AdaVAE.train()
 
-    cyclic_weights = frange_cycle_linear(args.iterations, start=0.0, stop=args.beta_0, n_cycle=4, ratio=0.5)
+    cyclic_weights = frange_cycle_zero_linear(args.iterations, start=0.0, stop=args.beta_0,
+                                              n_cycle=4, ratio_increase=0.5, ratio_zero=0.25) #frange_cycle_linear(args.iterations, start=0.0, stop=args.beta_0, n_cycle=4, ratio=0.5)
     while num_iters < args.iterations:
         # Run epoch
         st = time.time()

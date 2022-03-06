@@ -197,7 +197,7 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
             z = model.reparameterize(mean, logvar, ns=ns)
 
             # [batch, nsamples]
-            log_prior = prior.log_prob(z).sum(dim=-1) ## [bs, ns]
+            log_prior = (-0.5 * math.log(2*math.pi) - z**2 / 2).sum(dim=-1)#prior.log_prob(z).sum(dim=-1) ## [bs, ns]
             logits = model.eval_cond_ll(x=input_tokens, mask=att_mask, z=z)
             log_gen = - loss_fn(logits.view(-1, logits.size(-1)), x_tokens.view(-1)).view(bs, ns, -1).sum(-1)
 
@@ -488,8 +488,8 @@ def train(args):
     ## load ckpt
     if args.load:
         logging.info('Loading model weights...')
-        state = torch.load(os.path.join("./out/penn_data_iter20000_as128_scalar1.0_cycle-auto_prenc-start_wsFalse_lg-averaged_attn_add_attn_beta1.0_reg-kld_attn_"
-                                        "mode-none_ffn_option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-32_optFalse_zrate-10.0_sd-42_2.26/model_latest.pt"))  # , map_location='cpu' model_latest.pt
+        state = torch.load(os.path.join("./out/yelp_data_iter10000_as128_scalar1.0_cycle-auto_prenc-start_wsTrue_lg-averaged_attn_add_attn_beta1.0_reg-kld_attn_mode-none_"
+                                        "ffn_option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-32_optFalse_zrate-10.0_fb-1sd-42_3.5/model_latest.pt"))  # , map_location='cpu' model_latest.pt
         if 'module' in list(state.keys())[0]:  # model_path is data parallel model with attr 'module'
             state_copy = copy.copy(state)
             keys = state_copy.keys()
@@ -510,7 +510,7 @@ def train(args):
     loss_fn = nn.CrossEntropyLoss(ignore_index=endoftext, reduction='none')
 
     logging.info("Begin training iterations")
-    max_val_batches = 200  # max num. of val batches
+    max_val_batches = 20  # max num. of val batches
     logging.info("Total iteration: %d" % args.iterations)
     e = 0  # number of epoch
     num_iters = 0
@@ -773,8 +773,9 @@ def train(args):
             for i, data_dict in enumerate(train_loader):
                 x_ids, input_ids, attention_mask = tokenize(data_dict['x'], tokenizer, device, args)
 
-                if (args.cycle != "const") and (num_iters % cycle_num >= cycle_num - args.beta_warmup):
-                    beta = min(1.0, beta + (1. - args.beta_0) / args.beta_warmup)
+                # if (args.cycle != "const") and (num_iters % cycle_num >= cycle_num - args.beta_warmup):
+                #     beta = min(1.0, beta + (1. - args.beta_0) / args.beta_warmup)
+                beta = frange_cycle_linear(num_iters, start=0.0, stop=args.beta_0, n_cycle=4, ratio=0.5)
 
                 if not tuning_enc and num_iters >= pre_enc_iter:
                     encoder_unfreeze_modules = [GPT2Adapter]
@@ -845,9 +846,9 @@ def train(args):
                 num_iters += 1
                 pbar.update(1)
 
-                if (args.cycle != "const") and (num_iters % cycle_num == 0):
-                    beta = args.beta_0
-                    logging.info('KL annealing restart')
+                # if (args.cycle != "const") and (num_iters % cycle_num == 0):
+                #     beta = args.beta_0
+                #     logging.info('KL annealing restart')
 
                 log_interval = 3000 if args.iterations <= 30000 else int(args.iterations / 5)
                 if num_iters % log_interval == 0:
@@ -910,7 +911,7 @@ def train(args):
 
 if __name__=="__main__":
     args = parser.parse_args()
-    # args = parser.parse_args('--batch-sizes 100 --load --dataset penn_data --max_length 32 --add_attn --weighted_sample --adapter_size 128 --pre_enc_iter start --iterations 200 --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init other --attn_mode none --kl_rate 10.0'.split())
+    # args = parser.parse_args('--batch-sizes 100 --load --dataset yelp_data --max_length 32 --add_attn --weighted_sample --adapter_size 128 --pre_enc_iter start --iterations 200 --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init other --attn_mode none --kl_rate 10.0'.split())
     # args = parser.parse_args('--batch-sizes 128 --max_length 25 --add_attn --adapter_size 128 --latent_size 32 '
     #                          '--decoder_n_layer 12 --encoder_n_layer 8 --adapter_init bert --attn_mode none --kl_rate 0.5'.split())
     train(args)

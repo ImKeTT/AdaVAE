@@ -510,7 +510,7 @@ def train(args):
     loss_fn = nn.CrossEntropyLoss(ignore_index=endoftext, reduction='none')
 
     logging.info("Begin training iterations")
-    max_val_batches = 20  # max num. of val batches
+    max_val_batches = 200  # max num. of val batches
     logging.info("Total iteration: %d" % args.iterations)
     e = 0  # number of epoch
     num_iters = 0
@@ -759,6 +759,7 @@ def train(args):
 
         AdaVAE.train()
 
+    cyclic_weights = frange_cycle_linear(args.iterations, start=0.0, stop=args.beta_0, n_cycle=4, ratio=0.5)
     while num_iters < args.iterations:
         # Run epoch
         st = time.time()
@@ -775,7 +776,7 @@ def train(args):
 
                 # if (args.cycle != "const") and (num_iters % cycle_num >= cycle_num - args.beta_warmup):
                 #     beta = min(1.0, beta + (1. - args.beta_0) / args.beta_warmup)
-                beta = frange_cycle_linear(num_iters, start=0.0, stop=args.beta_0, n_cycle=4, ratio=0.5)
+                beta = cyclic_weights[num_iters]
 
                 if not tuning_enc and num_iters >= pre_enc_iter:
                     encoder_unfreeze_modules = [GPT2Adapter]

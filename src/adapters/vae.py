@@ -1439,9 +1439,13 @@ class AdaVAEModel(GPT2LMHeadModel):
             z = torch.randn(std.size(), device=mean.device, dtype=mean.dtype)
         return z.mul(std) + mean
 
-    def kl_loss(self, mean1, logvar1, mean2, logvar2):
+    def kl_loss_v1(self, mean1, logvar1, mean2, logvar2):
         exponential = logvar1 - logvar2 - torch.pow(mean1 - mean2, 2) / logvar2.exp() - torch.exp(logvar1 - logvar2) + 1
         result = -0.5 * torch.sum(exponential, tuple(range(1, len(exponential.shape))))
+        return result
+
+    def kl_loss(self, mean1, logvar1, mean2, logvar2):
+        result = 0.5 * (mean1.pow(2) + logvar1.exp() - logvar1 - 1)
         return result
 
     def adv_loss(self, mean1, logvar1, mean2, logvar2):
@@ -1561,10 +1565,11 @@ class AdaVAEModel(GPT2LMHeadModel):
 
         if self.reg_loss == "adversarial":
             regularization_loss = self.adv_loss(posterior_mean, posterior_logvar, prior_mean, prior_logvar)
-            regularization_loss.append(self.kl_loss(posterior_mean, posterior_logvar, prior_mean, prior_logvar).unsqueeze(0))
+            regularization_loss.append(self.kl_loss(posterior_mean, posterior_logvar, prior_mean, prior_logvar))#.unsqueeze(0))
         elif self.reg_loss == "kld":
             # kl_loss
-            regularization_loss = self.kl_loss(posterior_mean, posterior_logvar, prior_mean, prior_logvar).unsqueeze(0)
+            ## [bs, nz]
+            regularization_loss = self.kl_loss(posterior_mean, posterior_logvar, prior_mean, prior_logvar)#.unsqueeze(0)
         elif self.reg_loss == "symlog":
             regularization_loss = self.symlog_loss(posterior_mean, posterior_logvar)
         else:

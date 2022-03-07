@@ -111,7 +111,7 @@ parser.add_argument('--fp16_opt_level', default='O1', type=str, required=False)
 parser.add_argument('--beta_0', default=1.00, type=float)
 parser.add_argument('--beta_warmup', type=int, default=1000)
 parser.add_argument('--kl_rate', type=float, default=0.0)
-parser.add_argument('--fb', type=int, default=1, choices=[1, 2])
+parser.add_argument('--fb', type=int, default=1, choices=[1, 2, 3, 4])
 
 # cyc_vae parameters
 parser.add_argument('--cycle', type=str, default='auto',
@@ -137,7 +137,7 @@ parser.add_argument('--finetune_dec', help="whether to fine-tune decoder, if Tru
 # args = parser.parse_args('test --batch-sizes 1 --seq-lens 1024 '
 #                          '--add_input --learn_prior --fp16'.split()) # wi.12.proj_vary_beta_cvae
 
-def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta, kl_rate, reg_loss, weighted_sample=False, from_mean=True, fb=1):
+def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta, kl_rate, reg_loss, weighted_sample=False, from_mean=False, fb=1):
     """
 
     :param device:
@@ -177,21 +177,26 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
         loss = ce_loss.mean() + g_loss + beta * d_loss #+ beta * kld
     else:
         if fb == 1:
-            loss = ce_loss.mean() + beta * max(kl_loss.sum(dim=1), kl_rate)
-        elif fb == 2:
+            loss = ce_loss.mean() + beta * max(kl_loss.sum(dim=-1).mean(), kl_rate)
+        elif fb == 2 or fb == 4:
             kl_mask = (kl_loss > kl_rate).float().to(device)
-            kl_loss = (kl_mask * kl_loss).sum(dim=1)
+            kl_loss = (kl_mask * kl_loss).sum(dim=-1)
             # mask = (kl_loss > kl_rate).float().to(device)
             # kl_loss = kl_loss * mask + (1 - mask) * torch.full(kl_loss.size(), kl_rate).to(device)
-            loss = ce_loss.mean() + beta * kl_loss
+            loss = (ce_loss.mean() + beta * kl_loss).mean()
+        elif fb == 3:
+            kl_mask = (kl_loss > kl_rate).float().to(device)
+            ## Hinge Loss
+            kl_loss = (kl_loss * kl_mask + (1.0 - kl_mask) * torch.full(kl_loss.size(), kl_rate).to(device)).sum(dim=-1)
+            loss = (ce_loss.mean() + beta * kl_loss).mean()
 
     if weighted_sample:
         nsamples = 100
         ns = 10
         bs = mean.size(0)
-        loc = torch.zeros(mean.size(-1), device=device)
-        scale = torch.ones(mean.size(-1), device=device)
-        prior = torch.distributions.normal.Normal(loc, scale)
+        # loc = torch.zeros(mean.size(-1), device=device)
+        # scale = torch.ones(mean.size(-1), device=device)
+        # prior = torch.distributions.normal.Normal(loc, scale)
         ll_tmp, rc_tmp = [], []
         x_tokens = x_tokens.unsqueeze(1).expand(bs, ns, x_tokens.size(-1)).contiguous()
         for _ in range(int(nsamples / ns)):
@@ -214,9 +219,9 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
 
         log_prob_iw = log_sum_exp(torch.cat(ll_tmp, dim=-1), dim=-1) - math.log(nsamples)
         log_gen_iw = torch.mean(torch.cat(rc_tmp, dim=-1), dim=-1)
-        return loss, ce_loss, regularization_loss, mean, logvar, log_prob_iw, log_gen_iw
+        return loss, ce_loss, regularization_loss.sum(-1), mean, logvar, log_prob_iw, log_gen_iw
     else:
-        return loss, ce_loss, regularization_loss, mean, logvar
+        return loss, ce_loss, regularization_loss.sum(-1), mean, logvar
 
 def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, loss_fn, beta, kl_rate, reg_loss_type, from_mean, fb, model_type):
     # output = []
@@ -552,7 +557,8 @@ def train(args):
                         val_loss, val_ce_loss, val_reg_loss, val_mu, val_lv, \
                         val_loss_ppl, val_loss_rec = compute_loss(device, AdaVAE, val_x_ids,
                                                                        val_input_ids, val_attention_mask,
-                                                                       loss_fn, 1.0, 0.0, args.reg_loss, True)
+                                                                       loss_fn, 1.0, 0.0, args.reg_loss,
+                                                                  weighted_sample=True, from_mean=True, fb=args.fb)
                         val_loss_ppl, val_loss_rec = val_loss_ppl.sum(), val_loss_rec.mean()
                         reported_loss_ppl += val_loss_ppl.item()
                         reported_loss_rec += val_loss_rec.item()
@@ -561,7 +567,7 @@ def train(args):
                                                                                            val_input_ids,
                                                                                            val_attention_mask,
                                                                                            loss_fn, 1.0, 0.0,
-                                                                                           args.reg_loss)
+                                                                                           args.reg_loss, fb=args.fb)
                     # else:
                     #     loss, ce_loss, kl_loss = compute_loss_ae(device, AdaVAE, x_mask, x_tokens, y_mask, y_tokens,
                     #                                              input_tokens, target_tokens, mask, loss_fn, 1.0)
@@ -635,6 +641,7 @@ def train(args):
             nll = - reported_loss_rec / val_loader_len
             neg_reported_ppl_loss = -reported_loss_ppl
             ppl_bpe = round(math.exp(min(neg_reported_ppl_loss / n_words_bpe, 100)), 3)
+            ppl_elbo = round(math.exp(min((reg_loss_sum - reported_loss_rec) / n_words_bpe, 100)), 3)
             ppl_word = round(math.exp(min(neg_reported_ppl_loss / n_words, 100)), 3)
         else:
             elbo = (logp_sum + latent_bound) / n_words_bpe
@@ -702,7 +709,7 @@ def train(args):
 
                     val_loss, val_ce_loss, _, val_mu, val_lv = compute_loss(device, AdaVAE, val_x_ids,
                                                                                        val_input_ids, val_attention_mask,
-                                                                                       loss_fn, 1.0, 0.0, args.reg_loss)
+                                                                                       loss_fn, 1.0, 0.0, args.reg_loss, fb=args.fb)
                 if cnt_au == 0:
                     var_sum = ((val_mu - mean_mean) ** 2).sum(dim=0)
                 else:
@@ -722,6 +729,7 @@ def train(args):
         v_writer.add_scalar('loss', loss_bpe, num_iters)
         v_writer.add_scalar('elbo', elbo, num_iters)
         v_writer.add_scalar('ppl_bpe', ppl_bpe, num_iters)
+        v_writer.add_scalar('ppl_elbo', ppl_elbo, num_iters)
         v_writer.add_scalar('ppl_word', ppl_word, num_iters)
         v_writer.add_scalar('reg_loss', reg, num_iters)
         v_writer.add_scalar('mutual_information', mi, num_iters)
@@ -733,14 +741,15 @@ def train(args):
             logging.info('val g_loss: %.4f' % g_loss)
         if args.weighted_sample:
             v_writer.add_scalar('nll', nll, num_iters)
-            logging.info('val nll : %.4f' % nll)
-        logging.info('val loss    : %.4f' % loss_bpe)
-        logging.info('val elbo    : %.4f' % elbo)
-        logging.info('val ppl_bpe : %.4f' % ppl_bpe)
-        logging.info('val ppl_word: %.4f' % ppl_word)
-        logging.info('val reg_loss: %.4f' % reg)
-        logging.info('val MI      : %.4f' % mi)
-        logging.info('val AU      : %.4f' % n_au)
+            logging.info('val nll  : %.4f' % nll)
+        logging.info('val loss     : %.4f' % loss_bpe)
+        logging.info('val elbo     : %.4f' % elbo)
+        logging.info('val ppl_bpe  : %.4f' % ppl_bpe)
+        logging.info('val ppl_elbo : %.4f' % ppl_elbo)
+        logging.info('val ppl_word : %.4f' % ppl_word)
+        logging.info('val reg_loss : %.4f' % reg)
+        logging.info('val MI       : %.4f' % mi)
+        logging.info('val AU       : %.4f' % n_au)
         bsz = 5
         sents, _ = sample_sequence(AdaVAE, args.max_length,
                                 batch_size=bsz, top_k=100, top_p=0.95,
@@ -762,7 +771,7 @@ def train(args):
         AdaVAE.train()
 
     cyclic_weights = frange_cycle_zero_linear(args.iterations, start=0.0, stop=args.beta_0,
-                                              n_cycle=4, ratio_increase=0.5, ratio_zero=0.25) #frange_cycle_linear(args.iterations, start=0.0, stop=args.beta_0, n_cycle=4, ratio=0.5)
+                                              n_cycle=4, ratio_increase=0.25, ratio_zero=0.5) #frange_cycle_linear(args.iterations, start=0.0, stop=args.beta_0, n_cycle=4, ratio=0.5)
     while num_iters < args.iterations:
         # Run epoch
         st = time.time()
@@ -815,7 +824,7 @@ def train(args):
 
                 if args.warmup != -1:
                     scheduler.step()
-                kl_rate = args.kl_rate / args.latent_size if args.fb == 3 else args.kl_rate
+                kl_rate = args.kl_rate / args.latent_size if args.fb == 4 else args.kl_rate
                 loss, ce_loss, regul_loss = train_step(device, AdaVAE, optimizer, x_ids, input_ids, attention_mask,
                                                        loss_fn, beta, kl_rate, args.reg_loss, False, args.fb, args.model_type)
                 if args.reg_loss == "adversarial":
@@ -915,7 +924,7 @@ def train(args):
 
 if __name__=="__main__":
     args = parser.parse_args()
-    # args = parser.parse_args('--batch-sizes 100 --load --dataset yelp_data --max_length 32 --add_attn --weighted_sample --adapter_size 128 --pre_enc_iter start --iterations 200 --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init other --attn_mode none --kl_rate 10.0'.split())
+    # args = parser.parse_args('--batch-sizes 100 --dataset yelp_data --max_length 32 --pre_enc_iter start --add_attn --beta_0 1 --fb 3 --adapter_size 128 --iterations 200 --weighted_sample --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 0.05 --fb 3'.split())
     # args = parser.parse_args('--batch-sizes 128 --max_length 25 --add_attn --adapter_size 128 --latent_size 32 '
     #                          '--decoder_n_layer 12 --encoder_n_layer 8 --adapter_init bert --attn_mode none --kl_rate 0.5'.split())
     train(args)

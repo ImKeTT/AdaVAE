@@ -37,7 +37,7 @@ parser.add_argument('--lr', type=float, default=5e-5)
 parser.add_argument("--seed", type=int, default=42)
 
 # parser.add_argument('--data_type', type=str, default='t1', choices=['t' + str(i) for i in range(9)], help="t: type")
-parser.add_argument('--model_type', type=str, default='cvae', choices=['cvae'])
+parser.add_argument('--model_type', type=str, default='cvae', choices=['cvae', 'vqvae', 'daae'])
 parser.add_argument('--iterations', type=int, default=2000 * 3)
 parser.add_argument('--dataset', type=str, default='yelp_data', choices=['yelp_data', 'yahoo_data', 'snli_data',
                                                                          'penn_data', 'yelp_polarity', 'imdb_polarity'],
@@ -161,8 +161,10 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
     logvar = outputs[-1]
     if reg_loss == "adversarial":
         d_loss, g_loss, kld = regularization_loss[0], regularization_loss[1], regularization_loss[2]
+        regularization_loss[2] = regularization_loss[2].sum(-1)
     else:
         kl_loss = regularization_loss
+        regularization_loss = regularization_loss.sum(-1)
     num_logits = logits.size(-1)
 
     # Perform masking
@@ -220,9 +222,9 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
 
         log_prob_iw = log_sum_exp(torch.cat(ll_tmp, dim=-1), dim=-1) - math.log(nsamples)
         log_gen_iw = torch.mean(torch.cat(rc_tmp, dim=-1), dim=-1)
-        return loss, ce_loss, regularization_loss.sum(-1), mean, logvar, log_prob_iw, log_gen_iw
+        return loss, ce_loss, regularization_loss, mean, logvar, log_prob_iw, log_gen_iw
     else:
-        return loss, ce_loss, regularization_loss.sum(-1), mean, logvar
+        return loss, ce_loss, regularization_loss, mean, logvar
 
 def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, loss_fn, beta, kl_rate, reg_loss_type, from_mean, fb, model_type):
     # output = []
@@ -248,8 +250,12 @@ def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, loss_
     # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # max_grad_norm=1.0
     optimizer.step()
     # output.append((loss.item(), ce_loss.mean().item(), reg_loss.item()))
-
-    return loss.item(), ce_loss.mean().item(), reg_loss.mean()
+    if reg_loss_type == "adversarial":
+        ## reg_loss: [discriminator loss, generator loss, KL loss]
+        reg_loss[2] = reg_loss[2].mean()
+    else:
+        reg_loss = reg_loss.mean()
+    return loss.item(), ce_loss.mean().item(), reg_loss
 
 def train(args):
     now = datetime.datetime.now()

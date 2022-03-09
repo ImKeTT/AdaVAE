@@ -33,7 +33,7 @@ from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, AdamW, get_
 parser = argparse.ArgumentParser()
 
 # Default parameters are set based on single GPU training
-parser.add_argument('--lr', type=float, default=5e-4)
+parser.add_argument('--lr', type=float, default=5e-5)
 parser.add_argument("--seed", type=int, default=42)
 
 # parser.add_argument('--data_type', type=str, default='t1', choices=['t' + str(i) for i in range(9)], help="t: type")
@@ -176,18 +176,19 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
     if reg_loss == "adversarial":
         loss = ce_loss.mean() + g_loss + beta * d_loss #+ beta * kld
     else:
+        ## kl_loss: [bs, nz]
         if fb == 1:
-            loss = ce_loss.mean() + beta * max(kl_loss.sum(dim=-1).mean(), kl_rate)
+            loss = ce_loss.mean() + beta * max(kl_loss.sum(dim=1).mean(), kl_rate)
         elif fb == 2 or fb == 4:
             kl_mask = (kl_loss > kl_rate).float().to(device)
-            kl_loss = (kl_mask * kl_loss).sum(dim=-1)
+            kl_loss = (kl_mask * kl_loss).sum(dim=1)
             # mask = (kl_loss > kl_rate).float().to(device)
             # kl_loss = kl_loss * mask + (1 - mask) * torch.full(kl_loss.size(), kl_rate).to(device)
             loss = (ce_loss.mean() + beta * kl_loss).mean()
         elif fb == 3:
             kl_mask = (kl_loss > kl_rate).float().to(device)
             ## Hinge Loss
-            kl_loss = (kl_loss * kl_mask + (1.0 - kl_mask) * torch.full(kl_loss.size(), kl_rate).to(device)).sum(dim=-1)
+            kl_loss = (kl_loss * kl_mask + (1.0 - kl_mask) * torch.full(kl_loss.size(), kl_rate).to(device)).sum(dim=1)
             loss = (ce_loss.mean() + beta * kl_loss).mean()
 
     if weighted_sample:
@@ -204,7 +205,7 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
             z = model.reparameterize(mean, logvar, ns=ns)
 
             # [batch, nsamples]
-            log_prior = (-0.5 * math.log(2*math.pi) - z**2 / 2).sum(dim=-1)#prior.log_prob(z).sum(dim=-1) ## [bs, ns]
+            log_prior = (-0.5 * math.log(2 * math.pi) - z ** 2 / 2).sum(dim=-1)#prior.log_prob(z).sum(dim=-1) ## [bs, ns]
             logits = model.eval_cond_ll(x=input_tokens, mask=att_mask, z=z)
             log_gen = - loss_fn(logits.view(-1, logits.size(-1)), x_tokens.view(-1)).view(bs, ns, -1).sum(-1)
 
@@ -558,7 +559,7 @@ def train(args):
                         val_loss_ppl, val_loss_rec = compute_loss(device, AdaVAE, val_x_ids,
                                                                        val_input_ids, val_attention_mask,
                                                                        loss_fn, 1.0, 0.0, args.reg_loss,
-                                                                  weighted_sample=True, from_mean=True, fb=args.fb)
+                                                                  weighted_sample=True, fb=args.fb)
                         val_loss_ppl, val_loss_rec = val_loss_ppl.sum(), val_loss_rec.mean()
                         reported_loss_ppl += val_loss_ppl.item()
                         reported_loss_rec += val_loss_rec.item()
@@ -708,8 +709,8 @@ def train(args):
                     val_x_ids, val_input_ids, val_attention_mask = tokenize(val_data_dict['x'], tokenizer, device, args)
 
                     val_loss, val_ce_loss, _, val_mu, val_lv = compute_loss(device, AdaVAE, val_x_ids,
-                                                                                       val_input_ids, val_attention_mask,
-                                                                                       loss_fn, 1.0, 0.0, args.reg_loss, fb=args.fb)
+                                                                            val_input_ids, val_attention_mask,
+                                                                            loss_fn, 1.0, 0.0, args.reg_loss, fb=args.fb)
                 if cnt_au == 0:
                     var_sum = ((val_mu - mean_mean) ** 2).sum(dim=0)
                 else:
@@ -824,7 +825,12 @@ def train(args):
 
                 if args.warmup != -1:
                     scheduler.step()
-                kl_rate = args.kl_rate / args.latent_size if args.fb == 4 else args.kl_rate
+                if args.fb == 1:
+                    kl_rate = args.kl_rate * args.latent_size
+                elif args.fb == 4:
+                    kl_rate = args.kl_rate / args.latent_size
+                else:
+                    kl_rate = args.kl_rate
                 loss, ce_loss, regul_loss = train_step(device, AdaVAE, optimizer, x_ids, input_ids, attention_mask,
                                                        loss_fn, beta, kl_rate, args.reg_loss, False, args.fb, args.model_type)
                 if args.reg_loss == "adversarial":
@@ -924,7 +930,7 @@ def train(args):
 
 if __name__=="__main__":
     args = parser.parse_args()
-    # args = parser.parse_args('--batch-sizes 100 --dataset yelp_data --max_length 32 --pre_enc_iter start --add_attn --beta_0 1 --fb 3 --adapter_size 128 --iterations 200 --weighted_sample --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 0.05 --fb 3'.split())
+    # args = parser.parse_args('--batch-sizes 100 --dataset yelp_data --max_length 32 --pre_enc_iter start --add_attn --beta_0 1 --adapter_size 128 --iterations 200 --weighted_sample --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 0.05 --fb 3'.split())
     # args = parser.parse_args('--batch-sizes 128 --max_length 25 --add_attn --adapter_size 128 --latent_size 32 '
     #                          '--decoder_n_layer 12 --encoder_n_layer 8 --adapter_init bert --attn_mode none --kl_rate 0.5'.split())
     train(args)

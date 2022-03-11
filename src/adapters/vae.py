@@ -1460,8 +1460,8 @@ class AdaVAEModel(GPT2LMHeadModel):
         :return:
         """
         bce_loss = nn.BCEWithLogitsLoss()
-        z = self.reparameterize(mean1, logvar1)
-        zn = self.reparameterize(mean2, logvar2) # drawn from prior
+        z = self.reparameterize(mean1, logvar1) ## drawn from posterior
+        zn = self.reparameterize(mean2, logvar2) # drawn from prior N(0, I)
         zeros = torch.zeros(len(z), 1, device=z.device)
         ones = torch.ones(len(z), 1, device=z.device)
         ## discriminator loss

@@ -21,21 +21,18 @@ def set_trainable(module, value):
 
 
 class SpaceFusion(AdaVAEModel):
-    def __init__(self, args, config, AdapterConfig, sep_id, pad_id, add_input=False, add_attn=False, add_softmax=False,
-                 attn_proj_vary=False, learn_prior=False, reg_loss="kld"):
-        super(SpaceFusion, self).__init__(args, config, AdapterConfig, sep_id,
-                                          add_input, add_attn, add_softmax, attn_proj_vary, learn_prior, reg_loss)
-
+    def __init__(self, args, config, AdapterConfig, sep_id, pad_id, add_input=False, add_attn=False, add_softmax=False, add_mem=False,
+                 attn_proj_vary=False, reg_loss="kld"):
+        super(SpaceFusion, self).__init__(config, AdapterConfig, add_input, add_attn, add_softmax, add_mem,
+                 attn_proj_vary, False, reg_loss)
         self.transformer = Decoder(config, AdapterConfig, add_input, add_attn,
                                    attn_proj_vary)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self.encoder = Encoder(config, AdapterConfig)
-
-        # children = [v for v in self.encoder.layer.children()]  # list of 12 BertLayer
-
+        # children = [v for v in self.encoder.layer.children()]
         # self.num_s2s_bert_layer = args.num_s2s_bert_layer
-        # self.S2S_layers = nn.ModuleList(
-        #     [copy.deepcopy(c) for c in children[-args.num_s2s_bert_layer:]])  # the last layer of encoder
+        # self.S2S_layers = nn.ModuleList([copy.deepcopy(c) for c in children[-args.num_s2s_transformer_layer:]])
+
         self.ix_turn_sep = sep_id
         # if args.freeze_bert:
         #     print('@' * 20 + f' freezing BERT {args.num_frozen_bert_layer} layers')
@@ -47,10 +44,9 @@ class SpaceFusion(AdaVAEModel):
         self.add_attn = add_attn
         self.add_softmax = add_softmax
         self.attn_proj_vary = attn_proj_vary
-        self.learn_prior = learn_prior
         self.reg_loss = reg_loss
         self.AdapterConfig = AdapterConfig
-        self.CELoss = nn.CrossEntropyLoss(ignore_index=pad_id, reduction="none")
+        self.CELoss = nn.CrossEntropyLoss(ignore_index=pad_id)
 
         if self.learn_prior:
             self.encoder_prior = Encoder(config, AdapterConfig)
@@ -97,13 +93,14 @@ class SpaceFusion(AdaVAEModel):
         from_prior=False,
         from_mean=False,
         return_vec=False,):  # [batch, time]
+
         # toggle config to get desired encoder output
-        self.encoder.encoder.output_attentions = False
-        self.encoder.encoder.output_hidden_states = True
+        # self.encoder.encoder.output_attentions = False
+        # self.encoder.encoder.output_hidden_states = True
 
         # AE encoder
         mask = (inputs_tgt > 0).float().to(inputs_src.device)
-        posterior_mean, posterior_logvar = self.encoder(inputs_tgt, attention_mask=tgt_attention_mask)[:2]
+        posterior_mean, posterior_logvar = self.encoder(inputs_tgt, attention_mask=mask)[:2]
         z_AE = self.reparameterize(posterior_mean, posterior_logvar)
         z_AE = z_AE.squeeze(1)
 
@@ -155,14 +152,15 @@ class SpaceFusion(AdaVAEModel):
             # outputs = self.decoder(input_ids=labels_tgt, past=past, labels=labels_tgt, label_ignore=self.pad_token_id)
             hidden_states = transformer_outputs[0]
             lm_logits = self.lm_head(hidden_states)
+            num_logits = lm_logits.size(-1)
 
             # Perform masking
-            if tgt_attention_mask is not None:
-                att_mask = tgt_attention_mask.type(torch.bool)
-                lm_logits = lm_logits.masked_select(att_mask.unsqueeze(-1))
-                labels_tgt = labels_tgt.masked_select(att_mask)
+            # if tgt_attention_mask is not None:
+            #     att_mask = tgt_attention_mask.type(torch.bool)
+            #     lm_logits = lm_logits.masked_select(att_mask.unsqueeze(-1))
+            #     labels_tgt = labels_tgt.masked_select(att_mask)
 
-            loss_rec_ = self.CELoss(lm_logits.view(-1, lm_logits.size(-1), labels_tgt))
+            loss_rec_ = self.CELoss(lm_logits.view(-1, num_logits), labels_tgt.view(-1))
 
             if z_idx == 1:
                 loss_rec = loss_rec + 1.0 * loss_rec_
@@ -178,30 +176,33 @@ class SpaceFusion(AdaVAEModel):
 
         return loss_rec, loss_reg
 
-    # def sent2latent(self, inputs_src, attn_mask):
-    #     # toggle config to get desired encoder output
-    #     self.encoder.encoder.output_attentions = False
-    #     self.encoder.encoder.output_hidden_states = True
-    #
-    #     # S2S encoder
-    #     mask = (inputs_src > 0).float()
-    #     speaker = self.ids2speaker(inputs_src)
-    #     outputs = self.encoder(inputs_src, attention_mask=attn_mask, token_type_ids=speaker)
-    #
-    #     _, _, all_layer_attn = outputs  # last_layer_attn, pooled, all_layer_attn = outputs
-    #     # seq_z_prev = all_layer_attn[-2]     # seq of z at layer 11 ()
-    #     # layer_outputs = self.S2S_layer(seq_z_prev, attention_mask=mask.unsqueeze(1).unsqueeze(1))
-    #
-    #     seq_z_prev = all_layer_attn[-self.num_s2s_bert_layer - 1]  # seq of z at layer 11 ()
-    #     for s2s in self.S2S_layers:
-    #         layer_outputs = s2s(seq_z_prev, attention_mask=mask.unsqueeze(1).unsqueeze(1))
-    #         seq_z_prev = layer_outputs[0]
-    #
-    #     z_S2S = self.encoder.pooler(layer_outputs[0])
-    #     z_S2S, _ = self.connect(z_S2S)
-    #     z_S2S = z_S2S.squeeze(1)
-    #
-    #     return z_S2S
+    def sent2latent(self, inputs_src, attn_mask):
+        # toggle config to get desired encoder output
+        # self.encoder.encoder.output_attentions = False
+        # self.encoder.encoder.output_hidden_states = True
+
+        # S2S encoder
+        mask = (inputs_src > 0).float()
+        speaker = self.ids2speaker(inputs_src)
+        posterior_mean, posterior_logvar = self.encoder(inputs_src, attention_mask=attn_mask, token_type_ids=speaker)[:2]
+        z_S2S = self.reparameterize(posterior_mean, posterior_logvar)
+        z_S2S = z_S2S.squeeze(1)
+        # outputs = self.encoder(inputs_src, attention_mask=attn_mask, token_type_ids=speaker)
+        #
+        # _, _, all_layer_attn = outputs  # last_layer_attn, pooled, all_layer_attn = outputs
+        # # seq_z_prev = all_layer_attn[-2]     # seq of z at layer 11 ()
+        # # layer_outputs = self.S2S_layer(seq_z_prev, attention_mask=mask.unsqueeze(1).unsqueeze(1))
+        #
+        # seq_z_prev = all_layer_attn[-self.num_s2s_bert_layer - 1]  # seq of z at layer 11 ()
+        # for s2s in self.S2S_layers:
+        #     layer_outputs = s2s(seq_z_prev, attention_mask=mask.unsqueeze(1).unsqueeze(1))
+        #     seq_z_prev = layer_outputs[0]
+        #
+        # z_S2S = self.encoder.pooler(layer_outputs[0])
+        # z_S2S, _ = self.connect(z_S2S)
+        # z_S2S = z_S2S.squeeze(1)
+
+        return z_S2S
 
     def dist_pair(self, a, b):
         return F.pairwise_distance(a, b).mean()

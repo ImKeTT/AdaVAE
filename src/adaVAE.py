@@ -869,7 +869,7 @@ def train(args):
                 #     t_writer.add_scalar('ae_kl', kl_loss, num_iters)
 
                 st = time.time()
-                end = num_iters >= args.iterations
+                end = num_iters >= args.iterations - 1
 
 
                 if end:
@@ -882,7 +882,7 @@ def train(args):
                 #     logging.info('KL annealing restart')
 
                 log_interval = 3000 if args.iterations <= 30000 else int(args.iterations / 5)
-                if (num_iters + 1) % log_interval == 0:
+                if num_iters % log_interval == 0:
                     logging.info("test set")
                     _ = val_step(test_loader)
                     logging.info("validation set")
@@ -892,7 +892,7 @@ def train(args):
                     else:
                         et += 1
 
-                if (num_iters + 1) % int(args.iterations / 0.5) == 0:
+                if num_iters % int(args.iterations / 0.5) == 0:
                     logging.info('Saving model...')
                     logging.info("Iteration completed: %d, remained %d" % (num_iters, args.iterations - num_iters))
                     logging.info("Saving model...")
@@ -949,7 +949,7 @@ def train(args):
 
 if __name__=="__main__":
     args = parser.parse_args()
-    # args = parser.parse_args('--batch-sizes 100 --dataset yelp_data --max_length 32 --pre_enc_iter start --add_attn --beta_0 1 --adapter_size 128 --iterations 200 --weighted_sample --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 0.05 --fb 3'.split())
+    # args = parser.parse_args('--batch-sizes 100 --dataset penn_data --max_length 32 --pre_enc_iter start --add_attn --beta_0 1 --fb 1 --adapter_size 128 --iterations 200 --weighted_sample --latent_size 32 --encoder_n_layer 8 --decoder_n_layer 12 --adapter_init bert --attn_mode none --kl_rate 0.05'.split())
     # args = parser.parse_args('--batch-sizes 128 --max_length 25 --add_attn --adapter_size 128 --latent_size 32 '
     #                          '--decoder_n_layer 12 --encoder_n_layer 8 --adapter_init bert --attn_mode none --kl_rate 0.5'.split())
     train(args)

@@ -13,7 +13,7 @@ sys.path.append('../')
 import numpy as np
 from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
-from tensorboardX import SummaryWriter
+# from tensorboardX import SummaryWriter
 from src.logger import Logger
 from src.data import ConditionalGenerationDataset
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, AdamW, get_linear_schedule_with_warmup
@@ -29,7 +29,7 @@ parser.add_argument("--seed", type=int, default=42)
 parser.add_argument('--class_num', type=int, default=2)
 parser.add_argument('--batch_size', type=int, default=200)
 parser.add_argument('--max_length', type=int, default=30)
-parser.add_argument('--iterations', type=int, default=3000 * 3)
+parser.add_argument('--iterations', type=int, default=15000 * 3)
 parser.add_argument('--dataset', type=str, default='yelp_polarity', choices=['yelp_polarity', 'imdb_polarity'],
                     help="Dataset to use for training")
 parser.add_argument('--out_dir', type=str, default='cls_train_out')
@@ -105,7 +105,7 @@ def train(args):
     os.makedirs(save_folder, exist_ok=True)
     logging_file = "oracle_cls.log"
     logging = Logger(os.path.join(args.out_dir, logging_file))
-    t_writer = SummaryWriter(os.path.join(save_folder, 'train'), flush_secs=5)
+    # t_writer = SummaryWriter(os.path.join(save_folder, 'train'), flush_secs=5)
 
     logging.info('\n*******************************************************************************\n')
     logging.info("the configuration:")
@@ -164,14 +164,16 @@ def train(args):
         logging.info("val loss: %.4f + %.4f" % (val_loss, val_loss_std))
         logging.info("val acc : %.4f + %.4f" % (val_acc, val_acc_std))
         model.train()
+        return val_acc
 
 
-
+    best_acc = 0.0
     logging.info("Begin training iterations")
     max_val_batches = 200  # max num. of val batches
     logging.info("Total iteration: %d" % args.iterations)
     e = 0  # number of epoch
     num_iters = 0
+    et = 0
     while num_iters < args.iterations:
     # Run epoch
         # Training
@@ -189,8 +191,8 @@ def train(args):
                 loss = model.step(optimizer, loss_cls)
                 acc_cls = acc_cls.mean()
 
-                t_writer.add_scalar('loss', loss, num_iters)
-                t_writer.add_scalar('acc', acc_cls, num_iters)
+                # t_writer.add_scalar('loss', loss, num_iters)
+                # t_writer.add_scalar('acc', acc_cls, num_iters)
 
                 end = num_iters >= args.iterations
 
@@ -201,21 +203,32 @@ def train(args):
 
                 if (num_iters + 1) % 2000 == 0:
                     logging.info("Test dataset")
-                    val_step(test_loader)
+                    _ = val_step(test_loader)
                     logging.info("Valid dataset")
-                    val_step(val_loader)
+                    val_acc = val_step(val_loader)
+                    if val_acc > best_acc:
+                        best_acc = val_acc
+                        save_orderdict = model.state_dict()
+                        torch.save(save_orderdict, os.path.join(save_folder, 'oracle_cls_best.pt'))
+                    else:
+                        et += 1
+        if et >= 5:
+            logging.info("Early Stopping..")
+            break
 
         if not end:
             e += 1
             logging.info("Training loop. The ith epoch completed: %d" % e)
 
-    save_orderdict = model.state_dict()
-    torch.save(save_orderdict, os.path.join(save_folder, 'oracle_cls_latest.pt'))
+    # save_orderdict = model.state_dict()
+    # torch.save(save_orderdict, os.path.join(save_folder, 'oracle_cls_latest.pt'))
 
     logging.info("Test dataset")
     val_step(test_loader)
     logging.info("Valid dataset")
     val_step(val_loader)
+    logging.info("-" * 50)
+    logging.info("best acc: {:.4f}".format(best_acc))
 
 
 if __name__ == '__main__':

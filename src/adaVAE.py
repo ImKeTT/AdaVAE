@@ -96,6 +96,8 @@ parser.add_argument('--adapter_init', type=str, default='lora',
                     help="parameter initialization method for adapter layers.")
 parser.add_argument('--workers', default=2, type=int, metavar='N',
                     help='number of data loading workers')
+parser.add_argument('--early_stop', default=3, type=int,
+                    help='early stopping validation step')
 
 ## metrics
 parser.add_argument('--au_delta', type=float, default=0.01,
@@ -776,9 +778,13 @@ def train(args):
             logging.info(sent)
 
         AdaVAE.train()
+        return loss_bpe
 
     cyclic_weights = frange_cycle_zero_linear(args.iterations, start=0.0, stop=args.beta_0,
                                               n_cycle=4, ratio_increase=0.25, ratio_zero=0.5) #frange_cycle_linear(args.iterations, start=0.0, stop=args.beta_0, n_cycle=4, ratio=0.5)
+
+    best_val_loss = 99999.
+    et = 0
     while num_iters < args.iterations:
         # Run epoch
         st = time.time()
@@ -876,11 +882,15 @@ def train(args):
                 #     logging.info('KL annealing restart')
 
                 log_interval = 3000 if args.iterations <= 30000 else int(args.iterations / 5)
-                if num_iters % log_interval == 0:
+                if (num_iters + 1) % log_interval == 0:
                     logging.info("test set")
-                    val_step(test_loader)
+                    _ = val_step(test_loader)
                     logging.info("validation set")
-                    val_step(val_loader)
+                    val_loss = val_step(val_loader)
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                    else:
+                        et += 1
 
                 if (num_iters + 1) % int(args.iterations / 0.5) == 0:
                     logging.info('Saving model...')
@@ -898,6 +908,9 @@ def train(args):
                     torch.save(save_orderdict,
                                os.path.join(save_folder, 'ckpt/model',
                                             'model_' + '{:07d}'.format(num_iters) + '.pt'))
+                if et >= args.early_stop:
+                    logging.info("Early Stopping..")
+                    break
                     # torch.save(optimizer.state_dict(),
                     #            os.path.join(save_folder, 'ckpt/opt',
                     #                         'optimizer_' + '{:07d}'.format(num_iters) + '.pt'))
@@ -920,9 +933,9 @@ def train(args):
 
     ## last iteration testing
     logging.info("test set")
-    val_step(test_loader)
+    _ = val_step(test_loader)
     logging.info("validation set")
-    val_step(val_loader)
+    _ = val_step(val_loader)
 
     if args.save_all:
         save_orderdict = AdaVAE.state_dict()

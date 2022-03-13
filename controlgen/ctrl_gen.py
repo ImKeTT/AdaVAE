@@ -351,12 +351,15 @@ class Ctrl_AdaVAE(nn.Module):
                  add_attn=False, add_softmax=False,
                  attn_proj_vary=False):
         super(Ctrl_AdaVAE, self).__init__()
-        self.transformer = decoder
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        self.transformer = decoder
         self.encoder = encoder
         self.bos_token_id = self.eos_token = eos_token
 
         self.nz = AdapterConfig.latent_size
+        self.n_label = args.n_label
+        # self.use_pooler = args.use_pooler
+
 
         # self.bos_token_id_list = self.tokenizer_decoder.encode(self.tokenizer_decoder.bos_token)
         # self.pad_token_id = self.tokenizer_decoder.encode(self.tokenizer_decoder.pad_token)[0]
@@ -371,7 +374,7 @@ class Ctrl_AdaVAE(nn.Module):
 
         self.label_embedding = nn.Embedding(AdapterConfig.class_num, self.nz, padding_idx=0)    # use the same size as latent_z so as to use the same decoder.linear()
         self.latent_generator = nn.Linear(self.nz, self.nz)
-        self.linear = nn.Linear(self.nz, self.nz)
+        self.linear = nn.Linear(self.nz, self.nz, bias=False)
         # self.latent2mem = nn.Linear(AdapterConfig.latent_size, config.hidden_size, bias=False)
         self.latent_classifier = nn.Linear(self.nz, AdapterConfig.class_num if AdapterConfig.class_num > 2 else 1)
         self.latent_discriminator = nn.Linear(self.nz, 1)
@@ -412,14 +415,14 @@ class Ctrl_AdaVAE(nn.Module):
             device=input_ids.device, dtype=torch.float32)
 
         ## Encode inputs
-        posterior_mean, posterior_logvar = self.encoder(input_ids=input_ids, attention_mask=attention_mask)[:2]
+        posterior_mean, posterior_logvar, hidden_states = self.encoder(input_ids=input_ids, attention_mask=attention_mask)[:3]
 
         prior_mean = prior_logvar = torch.zeros([input_ids.size(0), self.AdapterConfig.latent_size],
                                                 device=input_ids.device)
         prior_mean, prior_logvar = prior_mean.to(posterior_mean.dtype), prior_logvar.to(posterior_logvar.dtype)
 
         ## real z
-        latent_z = posterior_mean
+        latent_z = self.linear(posterior_mean)
         ## fake z
         gen_z = self.latent_generator(random_noise)
         # gen_z = random_noise
@@ -474,7 +477,7 @@ class Ctrl_AdaVAE(nn.Module):
         # past = torch.cat([past_z.unsqueeze(1), past_label.unsqueeze(1)], dim=1) # (B, 2, n_blocks * hidden_size)
 
 
-        past = latent_z + label_emb  # (B, n_blocks * hidden_size)
+        past = latent_z + self.n_label * label_emb  # (B, n_blocks * hidden_size)
         # past = [self.latent2mem(past.unsqueeze(-2)),
         #         self.latent2mem(past.unsqueeze(-2))]  # query, key
         # past = [past] * len(self.transformer.h)
@@ -537,7 +540,7 @@ class Ctrl_AdaVAE(nn.Module):
 
             # Generate based on encoded z and sampled labels (attribute transfer)
             # at_past = torch.cat([past_z.unsqueeze(1), past_sampled_label.unsqueeze(1)], dim=1) # (B, 2, n_blocks * hidden_size)
-            at_past = past_z + past_sampled_label  # (B, n_blocks * hidden_size)
+            at_past = past_z + self.n_label *  past_sampled_label  # (B, n_blocks * hidden_size)
             # at_past = [at_past.unsqueeze(-2), at_past.unsqueeze(-2)]  # query, key
             # at_past = [at_past] * len(self.transformer.h)
             at_generated = self.sample_sequence_conditional_batch(representations=at_past,
@@ -545,7 +548,7 @@ class Ctrl_AdaVAE(nn.Module):
 
             # Generate based on sampled z and sampled labels. (conditional generation)
             # cg_past = torch.cat([gen_past_z.unsqueeze(1), past_sampled_label.unsqueeze(1)], dim=1) # (B, 2, n_blocks * hidden_size)
-            cg_past = gen_past_z + past_sampled_label  # (B, n_blocks * hidden_size)
+            cg_past = gen_past_z + self.n_label * sampled_label_emb  # (B, n_blocks * hidden_size)
             # cg_past = [cg_past.unsqueeze(-2), cg_past.unsqueeze(-2)]  # query, key
             # cg_past = [cg_past] * len(self.transformer.h)
             cg_generated = self.sample_sequence_conditional_batch(representations=cg_past,

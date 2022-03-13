@@ -24,12 +24,12 @@ from src.data import ConditionalGenerationDataset
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, AdamW, get_linear_schedule_with_warmup, Conv1D
 
 
-# os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 
 parser = argparse.ArgumentParser()
 
 # Default parameters are set based on single GPU training
-parser.add_argument('--lr', type=float, default=5e-7)
+parser.add_argument('--lr', type=float, default=5e-5)
 parser.add_argument("--seed", type=int, default=42)
 
 # parser.add_argument('--data_type', type=str, default='t1', choices=['t' + str(i) for i in range(9)], help="t: type")
@@ -73,17 +73,20 @@ parser.add_argument('--max_length', type=int, default=25,
                     help='max length of every input sentence')
 parser.add_argument('--block_size', type=int, default=50,
                     help='max length of generated sentences')
-parser.add_argument('--switch-time', type=float, default=0,
-                    help="Percentage of iterations to spend on short sequence training.")
+parser.add_argument('--n_label', type=int, default=1,
+                    help='weight for adding label embedding to latent z')
+parser.add_argument('--label', type=int, default=0)
+parser.add_argument('--n_samples', type=int, default=50)
+
 parser.add_argument('--data-dir', type=str, default='data')
 parser.add_argument('--out-dir', type=str, default='train_out')
 parser.add_argument('--load_dir', type=str, default='../src/out')
-parser.add_argument('--experiment', type=str,
-                    default=None)
+parser.add_argument('--experiment', type=str, default=None)
 parser.add_argument('--eval_output_dir', type=str, default='eval_out')
-parser.add_argument('--adapter_init', type=str, default='lora',
-                    choices=['lora', 'bert', 'lisa', 'other'],
-                    help="parameter initialization method for adapter layers.")
+parser.add_argument('--restore_folder', type=str, default='yelp_polarity_3.12_label-3_add_attn')
+# parser.add_argument('--adapter_init', type=str, default='lora',
+#                     choices=['lora', 'bert', 'lisa', 'other'],
+#                     help="parameter initialization method for adapter layers.")
 parser.add_argument('--latent_gen', type=str, default="averaged_attn",
                     help="method for encoder to latent space, averaged_attn for average attention from "
                          "TransformerCVAE, linear for taken the first encoder token to a linear like Optimus",
@@ -98,18 +101,20 @@ parser.add_argument('--no_gpu', action="store_true")
 parser.add_argument('--fp16_opt_level', default='O1', type=str, required=False)
 
 # loss weights
-parser.add_argument('--beta_cls', default=0.00, type=float)
-parser.add_argument('--beta_latent', default=1.00, type=float)
-parser.add_argument('--beta_warmup', type=int, default=1000)
+parser.add_argument('--beta_cls', default=1.00, type=float)
+parser.add_argument('--beta_latent', default=0.50, type=float)
+parser.add_argument('--beta_warmup', type=int, default=2000)
 
 ## generation
-parser.add_argument('--top_k', default=100, type=int)
+parser.add_argument('--top_k', default=10, type=int)
 parser.add_argument('--top_p', default=0.95, type=float)
-parser.add_argument('--temperature', default=1.0, type=float)
+parser.add_argument('--temperature', default=0.9, type=float)
+parser.add_argument('--test_flag', default=0, type=int)
 
 ## trigger
 parser.add_argument('--load', action="store_true")
 parser.add_argument('--do_train', action="store_true")
+parser.add_argument('--do_cg', action="store_true")
 parser.add_argument('--add_input', action="store_true")
 parser.add_argument('--add_attn', action="store_true")
 parser.add_argument('--add_mem', action="store_true")
@@ -143,6 +148,48 @@ def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, cond_
     optimizer.step()
 
     return loss_dict, acc_dict
+
+
+def conditional_generate(args, model, tokenizer, label, n_samples, eval_output_dir, device):
+    model.eval()
+    os.makedirs(eval_output_dir, exist_ok=True)
+    # Eval!
+    with torch.no_grad():
+        random_noise = torch.nn.init.normal_(torch.empty(n_samples, args.latent_size)).to(device=device, dtype=torch.float32)
+        label_enc = torch.full([n_samples,], label, device=device).long()
+        gen_z = model.latent_generator(random_noise)
+
+        label_emb = model.label_embedding(label_enc)
+        cg_past = gen_z + args.n_label * label_emb  # (B, n_blocks * hidden_size)
+        # cg_past = [cg_past.unsqueeze(-2), cg_past.unsqueeze(-2)]  # query, key
+        # cg_past = [cg_past] * len(self.transformer.h)
+        bos_token_id = eos_token_id = pad_token_id = tokenizer.encode('<|endoftext|>')[0]
+        cg_generated = model.sample_sequence_conditional_batch(representations=cg_past,
+                                                              context=bos_token_id).cpu().tolist()  # (B, seq_len)
+
+        cg_generated_ids = []
+        cg_generated_text = []
+        for g in cg_generated:
+            if g and g[0] in [eos_token_id, bos_token_id]:
+                g = g[1:]
+            if g and g[0] in [eos_token_id, bos_token_id]:
+                g = g[1:]
+            g = g[:g.index(eos_token_id)] if eos_token_id in g else g
+            g = g[:g.index(pad_token_id)] if pad_token_id in g else g
+            g_text = tokenizer.decode(g, clean_up_tokenization_spaces=True)
+            cg_generated_ids.append(g)
+            cg_generated_text.append(g_text)
+
+        cg_generated_text_subset = cg_generated_text[:200]
+        cg_self_bleu = nltk.translate.bleu_score.corpus_bleu(list_of_references=[
+            [nltk.word_tokenize(t) for t in cg_generated_text_subset[:i] + cg_generated_text_subset[i + 1:]]
+            for i in range(len(cg_generated_text_subset))],
+            hypotheses=[nltk.word_tokenize(g) for g in
+                        cg_generated_text_subset])
+        with open(os.path.join(eval_output_dir, f"label-{label}_n_samples{n_samples}.txt"), 'w') as f:
+            for ii in cg_generated_text:
+                f.write(ii + '\n')
+        print(cg_self_bleu)
 
 
 def evaluate(args, model, tokenizer, logging, eval_dataloader, max_val_batches, eval_output_dir, iter, device):
@@ -344,7 +391,7 @@ def main(args):
                                class_num=args.label_size,
                                encoder_n_layer=args.encoder_n_layer,
                                decoder_n_layer=args.decoder_n_layer,
-                               init=args.adapter_init,
+                               init='other',
                                adapter_scalar=args.adapter_scalar,
                                ffn_option=args.ffn_option,
                                attn_mode=args.attn_mode,
@@ -375,29 +422,31 @@ def main(args):
     experiment = args.experiment
     load_folder = os.path.join(args.load_dir, experiment)
     if args.add_attn and args.add_mem:
-        final_folder = f"{args.dataset}_{date}_add_attn_mem"
+        final_folder = f"{args.dataset}_{date}_label-{args.n_label}_add_attn_mem"
     elif args.add_attn:
-        final_folder = f"{args.dataset}_{date}_add_attn"
+        final_folder = f"{args.dataset}_{date}_label-{args.n_label}_add_attn"
     elif args.add_mem:
-        final_folder = f"{args.dataset}_{date}_add_mem"
+        final_folder = f"{args.dataset}_{date}_label-{args.n_label}_add_mem"
     save_folder = os.path.join(args.out_dir, final_folder)
     os.makedirs(save_folder, exist_ok=True)
     t_writer = SummaryWriter(os.path.join(save_folder, 'train'), flush_secs=5)
     v_writer = SummaryWriter(os.path.join(save_folder, 'val'), flush_secs=5)
     logging_file = f"{args.dataset}_CtrlGen.log"
     logging = Logger(os.path.join(save_folder, logging_file))
+
+    cls_state = torch.load("./cls_train_out/oracle_cls_best.pt")
     state = torch.load(os.path.join(load_folder, 'model_latest.pt'))  # , map_location='cpu' model_latest.pt
     if 'module' in list(state.keys())[0]:  # model_path is data parallel model with attr 'module'
         state_copy = copy.copy(state)
         keys = state_copy.keys()
         for k in keys:
             state[k.replace('module.', '')] = state.pop(k)
-
-
     ## load trained parameters
     if not args.save_all:
         model_dict = model.state_dict()
         additional_dict = {k: v for k, v in state.items() if k in model_dict}
+        model_dict.update(additional_dict)
+        additional_dict = {k: v for k, v in cls_state.items() if k in model_dict}
         model_dict.update(additional_dict)
         model.load_state_dict(model_dict) ## only loads adapters and latent connectors from ckpt
     else:
@@ -411,7 +460,7 @@ def main(args):
     args.warmup = args.beta_warmup = int(args.iterations / 6)
 
     new_pars = ['c_z', 'attention_weights', 'mean', 'logvar', 'input_proj', 'attn_proj', 'Nu_fc1', 'Nu_fc2',
-                'lm_head_rep']
+                'lm_head_rep', 'lm_head']
     pars_ctrl = ['label_embedding', 'latent_generator', 'linear', 'latent_classifier', 'latent_discriminator',
                  'conv1', 'classifier']
     new_pars.extend(pars_ctrl)
@@ -485,42 +534,28 @@ def main(args):
         num_workers=args.workers)
     logging.info('Done.')
 
-    logging.info('Wrapping models and optimizers...')
-    # Apply linear scaling rule to increase batch size for short sequence training.
-    lr_schedule = switch_schedule(linear_schedule(args), batch_schedule[cur_b_schedule][0] / batch_schedule[-1][0],
-                                  int(args.iterations * args.switch_time))
-    optimizer = AdamW(model.parameters(), lr=args.lr, correct_bias=True)
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_schedule)
-    model, optimizer = amp.initialize(model, optimizer, opt_level=args.fp16_opt_level)
 
     ## load ckpt
-    if args.load:
-        logging.info('Loading model weights...')
-        state = torch.load(os.path.join(save_folder, 'model_latest.pt'))  # , map_location='cpu' model_latest.pt
-        if 'module' in list(state.keys())[0]:  # model_path is data parallel model with attr 'module'
-            state_copy = copy.copy(state)
-            keys = state_copy.keys()
-            for k in keys:
-                state[k.replace('module.', '')] = state.pop(k)
-        ## load trained parameters
-        if not args.save_all:
-            model_dict = model.state_dict()
-            additional_dict = {k: v for k, v in state.items() if k in model_dict}
-            model_dict.update(additional_dict)
-            model.load_state_dict(model_dict)
-            del model_dict
-        else:
-            model.load_state_dict(state)
-            del state
-
-    logging.info('Done.')
-
-    logging.info("Begin training iterations")
-    max_val_batches = 5  # max num. of val batches
-    logging.info("Total iteration: %d" % args.iterations)
-    e = 0  # number of epoch
-    num_iters = 0
-    optimizer.zero_grad()
+    # if args.load:
+    #     logging.info('Loading model weights...')
+    #     state = torch.load(os.path.join(args.restore_folder, 'model_latest.pt'))  # , map_location='cpu' model_latest.pt
+    #     if 'module' in list(state.keys())[0]:  # model_path is data parallel model with attr 'module'
+    #         state_copy = copy.copy(state)
+    #         keys = state_copy.keys()
+    #         for k in keys:
+    #             state[k.replace('module.', '')] = state.pop(k)
+    #     ## load trained parameters
+    #     if not args.save_all:
+    #         model_dict = model.state_dict()
+    #         additional_dict = {k: v for k, v in state.items() if k in model_dict}
+    #         model_dict.update(additional_dict)
+    #         model.load_state_dict(model_dict)
+    #         del model_dict
+    #     else:
+    #         model.load_state_dict(state)
+    #         del state
+    #
+    #     logging.info('Done.')
 
     def val_step(val_loader):
         model.eval()
@@ -618,6 +653,21 @@ def main(args):
         model.train()
 
     if args.do_train:
+        logging.info('Wrapping models and optimizers...')
+        # Apply linear scaling rule to increase batch size for short sequence training.
+        lr_schedule = switch_schedule(linear_schedule(args), batch_schedule[cur_b_schedule][0] / batch_schedule[-1][0],
+                                      int(args.iterations * args.switch_time))
+        optimizer = AdamW(model.parameters(), lr=args.lr, correct_bias=True)
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_schedule)
+        model, optimizer = amp.initialize(model, optimizer, opt_level=args.fp16_opt_level)
+
+        logging.info("Begin training iterations")
+        max_val_batches = 200  # max num. of val batches
+        logging.info("Total iteration: %d" % args.iterations)
+        e = 0  # number of epoch
+        num_iters = 0
+        optimizer.zero_grad()
+
         while num_iters < args.iterations:
             # Run epoch
             st = time.time()
@@ -676,13 +726,13 @@ def main(args):
                     num_iters += 1
                     pbar.update(1)
 
-                    if (num_iters + 1) % 5000 == 0:
+                    if (num_iters + 1) % 4000 == 0:
                         logging.info("test set")
                         val_step(test_loader)
                         logging.info("validation set")
                         val_step(val_loader)
 
-                    if (num_iters + 1) % 6000 == 0:
+                    if (num_iters + 1) % int(args.iterations / 0.5) == 0:
                         logging.info('Saving model...')
                         logging.info("Iteration completed: %d, remained %d" % (num_iters, args.iterations - num_iters))
                         logging.info("Saving model...")
@@ -712,14 +762,19 @@ def main(args):
         logging.info('Training complete.')
 
     ## evaluate: generate; evaluate...
+    elif args.do_cg:
+        conditional_generate(args, model, tokenizer, args.label, args.n_samples, args.eval_output_dir, device)
     else:
-
+        max_val_batches = 200
+        logging.info("Begin Evaluation")
         model.eval()
         evaluate(args, model, tokenizer, logging, val_loader, max_val_batches,
-                 os.path.join(args.eval_output_dir, f"{args.dataset}_{date}"), 0, device)
+                 os.path.join(args.eval_output_dir, f"{args.dataset}_{date}"), args.test_flag, device)
 
 if __name__=="__main__":
     args = parser.parse_args()
-    args = parser.parse_args('--batch-sizes 50 --max_length 32 --add_attn --do_train --adapter_size 128 --latent_size 32 --experiment '
-                             'yelp_polarity_iter6000_as128_scalar1.0_add_mem_beta1.0_reg-kld_attn_mode-none_ffn_option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-32_zrate-10.0_sd-42_2.12'.split())
+    args = parser.parse_args('--batch-sizes 60 --max_length 32 --add_attn --do_train --iterations 40000 --n_label 3 --adapter_size 128 --latent_size 32 --experiment '
+                             'yelp_polarity_iter10000_as128_scalar1.0_cycle-auto_prenc-start_wsTrue_lg-averaged_attn_add_attn_beta1.0_reg-kld_attn_mode-none_ffn_option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-32_optFalse_zrate-0.25_fb-1sd-42_3.12'.split())
+    # args = parser.parse_args(
+    #     '--batch-sizes 90 --load_dir train_out --experiment yelp_polarity_3.12_label-3_add_attn --do_cg --label 0 --max_length 32 --n_label 3 --n_samples 50 --add_attn --iterations 20 --adapter_size 128 --latent_size 32'.split())
     main(args)

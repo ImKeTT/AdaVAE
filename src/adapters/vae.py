@@ -1430,6 +1430,12 @@ class AdaVAEModel(GPT2LMHeadModel):
                                                nn.ReLU(),
                                                nn.Linear(AdapterConfig.dis_emb, 1),
                                                nn.Sigmoid())
+        elif self.reg_loss == "quantize":
+            self.codebook = CodeBook(self.AdapterConfig.latent_size, config.n_embd, 0.25)
+            self.codebook._embedding.weight.data.normal_(mean=0, std=0.1)
+
+        elif self.reg_loss == "vamp":
+            pass
 
     def reparameterize(self, mean, logvar, z=None, ns=0):
         std = logvar.mul(0.5).exp()
@@ -1549,6 +1555,10 @@ class AdaVAEModel(GPT2LMHeadModel):
             z = self.reparameterize(latent_mean, latent_logvar)
         assert not torch.isnan(z).any(), 'training get nan z'
 
+        if self.reg_loss == "quantize":
+            # obtain latent variable z by coodebook
+            quantized_loss, z, perplexity, encoding = self.codebook(latent_mean)
+
         transformer_outputs = self.transformer(input_ids,
                                                past=past,
                                                attention_mask=attention_mask,
@@ -1573,6 +1583,8 @@ class AdaVAEModel(GPT2LMHeadModel):
             regularization_loss = self.kl_loss(posterior_mean, posterior_logvar, prior_mean, prior_logvar)#.unsqueeze(0)
         elif self.reg_loss == "symlog":
             regularization_loss = self.symlog_loss(posterior_mean, posterior_logvar)
+        elif self.reg_loss == "quantize":
+            regularization_loss = quantized_loss
         else:
             raise TypeError("No such regularization loss implemented !")
         outputs = outputs + (regularization_loss, posterior_mean, posterior_logvar)

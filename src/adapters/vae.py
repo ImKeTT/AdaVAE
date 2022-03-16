@@ -705,7 +705,7 @@ class Unmasked_AdapterBlock(Block):
         a = output_attn[0]  # output_attn: a, present, (attentions)
         outputs = output_attn[1:]
 
-        if self.Adaconfig.ffn_option == "sequential_attn":
+        if self.Adaconfig.ffn_option == "sequential_attn" or "houlsby":
             x = self.adapter(x)
 
         ## residual connection: intermidia layer, intermediate
@@ -736,7 +736,7 @@ class Unmasked_AdapterBlock(Block):
             x = x + a
         elif self.Adaconfig.ffn_option == "parallel_ffn":
             x = self.adapter(x)
-        elif self.Adaconfig.ffn_option == "sequential_ffn":
+        elif self.Adaconfig.ffn_option == "sequential_ffn" or "houlsby":
             m = self.adapter(m) ## a = a + adapter_change(a)
         x = x + m
         if self.Adaconfig.ffn_option == "pfeiffer":
@@ -790,7 +790,7 @@ class AdapterBlock(Block):
         a = output_attn[0]  # output_attn: a, present, (attentions)
         outputs = output_attn[1:]
 
-        if self.Adaconfig.ffn_option == "sequential_attn":
+        if self.Adaconfig.ffn_option == "sequential_attn" or "houlsby":
             # label_emb = label_emb.unsqueeze(1).repeat(1, x.size(1), 1)
             x = self.adapter(x)
         ## residual connection
@@ -822,7 +822,7 @@ class AdapterBlock(Block):
         elif self.Adaconfig.ffn_option == "parallel_ffn":
             # label_emb = label_emb.unsqueeze(1).repeat(1, x.size(1), 1)
             x = self.adapter(x)
-        elif self.Adaconfig.ffn_option == "sequential_ffn":
+        elif self.Adaconfig.ffn_option == "sequential_ffn" or "houlsby":
             # label_emb = label_emb.unsqueeze(1).repeat(1, m.size(1), 1)
             m = self.adapter(m)  ## a = a + adapter_change(a)
         x = x + m

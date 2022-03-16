@@ -232,7 +232,7 @@ class DialogGenerationDataset(Dataset):
         x = '<|endoftext|> ' + self.x[index] + ' <|endoftext|>'
         y = '<|endoftext|> ' + self.y[index] + ' <|endoftext|>'
 
-        return {'response': str(x), 'context': int(y)}
+        return {'response': str(x), 'context': str(y)}
 
     def __len__(self):
         return self.length

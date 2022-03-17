@@ -494,3 +494,89 @@ class PrefixDirectInit(nn.Module):
                         }
             result.append(temp_dict)
         return result
+
+############### Network Architechtures ###############
+class GatedDense(nn.Module):
+    def __init__(self, input_size, output_size, activation=None):
+        super(GatedDense, self).__init__()
+
+        self.activation = activation
+        self.sigmoid = nn.Sigmoid()
+        self.h = nn.Linear(input_size, output_size)
+        self.g = nn.Linear(input_size, output_size)
+
+    def forward(self, x):
+        h = self.h(x)
+        if self.activation is not None:
+            h = self.activation( self.h( x ) )
+
+        g = self.sigmoid( self.g( x ) )
+
+        return h * g
+
+class NonLinear(nn.Module):
+    def __init__(self, input_size, output_size, bias=True, activation=None):
+        super(NonLinear, self).__init__()
+
+        self.activation = activation
+        self.linear = nn.Linear(int(input_size), int(output_size), bias=bias)
+
+    def forward(self, x):
+        h = self.linear(x)
+        if self.activation is not None:
+            h = self.activation( h )
+
+        return h
+
+
+############## Distributions #################
+min_epsilon = 1e-5
+max_epsilon = 1.-1e-5
+#=======================================================================================================================
+def log_Normal_diag(x, mean, log_var, average=False, dim=None):
+    log_normal = -0.5 * ( log_var + torch.pow( x - mean, 2 ) / torch.exp( log_var ) )
+    if average:
+        return torch.mean( log_normal, dim )
+    else:
+        return torch.sum( log_normal, dim )
+
+def log_Normal_standard(x, average=False, dim=None):
+    log_normal = -0.5 * torch.pow( x , 2 )
+    if average:
+        return torch.mean( log_normal, dim )
+    else:
+        return torch.sum( log_normal, dim )
+
+def log_Bernoulli(x, mean, average=False, dim=None):
+    probs = torch.clamp( mean, min=min_epsilon, max=max_epsilon )
+    log_bernoulli = x * torch.log( probs ) + (1. - x ) * torch.log( 1. - probs )
+    if average:
+        return torch.mean( log_bernoulli, dim )
+    else:
+        return torch.sum( log_bernoulli, dim )
+
+def logisticCDF(x, u, s):
+    return 1. / ( 1. + torch.exp( -(x-u) / s ) )
+
+def sigmoid(x):
+    return 1. / ( 1. + torch.exp( -x ) )
+
+def log_Logistic_256(x, mean, logvar, average=False, reduce=True, dim=None):
+    bin_size = 1. / 256.
+
+    # implementation like https://github.com/openai/iaf/blob/master/tf_utils/distributions.py#L28
+    scale = torch.exp(logvar)
+    x = (torch.floor(x / bin_size) * bin_size - mean) / scale
+    cdf_plus = torch.sigmoid(x + bin_size/scale)
+    cdf_minus = torch.sigmoid(x)
+
+    # calculate final log-likelihood for an image
+    log_logist_256 = - torch.log(cdf_plus - cdf_minus + 1.e-7)
+
+    if reduce:
+        if average:
+            return torch.mean(log_logist_256, dim)
+        else:
+            return torch.sum(log_logist_256, dim)
+    else:
+        return log_logist_256

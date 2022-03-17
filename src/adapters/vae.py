@@ -17,7 +17,8 @@ from transformers.modeling_gpt2 import ACT2FN, Attention, GPT2Model, Block, MLP,
 # from transformers.models.gpt2.modeling_gpt2 import ACT2FN, GPT2Attention, GPT2Model, GPT2Block, GPT2MLP, GPT2LMHeadModel
 from transformers.modeling_utils import PreTrainedModel, Conv1D, prune_conv1d_layer, SequenceSummary
 sys.path.append('../')
-from .common import AdapterConfig, init_lisa_params, init_bert_weights, init_bias_mlp, init_zero_weights, LoRALinear, Adapter_Layer, Prefix
+from .common import AdapterConfig, init_lisa_params, init_bert_weights, init_bias_mlp, init_zero_weights, \
+    LoRALinear, Adapter_Layer, Prefix, GatedDense, NonLinear, log_Logistic_256, log_Normal_diag, log_Bernoulli
 
 
 logging.basicConfig(level=logging.INFO)
@@ -1435,7 +1436,50 @@ class AdaVAEModel(GPT2LMHeadModel):
             self.codebook._embedding.weight.data.normal_(mean=0, std=0.1)
 
         elif self.reg_loss == "vamp":
-            pass
+            self.q_z2_layers = nn.Sequential(
+                GatedDense(config.n_embd, 300),
+                GatedDense(300, 300)
+            )
+            self.q_z2_mean = nn.Linear(300, self.args.z2_size)
+            self.q_z2_logvar = NonLinear(300, self.args.z2_size,
+                                         activation=nn.Hardtanh(min_val=-6., max_val=2.))
+
+            self.q_z1_layers_x = nn.Sequential(
+                GatedDense(config.n_embd, 300)
+            )
+            self.q_z1_layers_z2 = nn.Sequential(
+                GatedDense(self.args.z2_size, 300)
+            )
+            self.q_z1_layers_joint = nn.Sequential(
+                GatedDense(2 * 300, 300)
+            )
+
+            self.q_z1_mean = nn.Linear(300, self.args.z1_size)
+            self.q_z1_logvar = NonLinear(300, self.args.z1_size,
+                                         activation=nn.Hardtanh(min_val=-6., max_val=2.))
+
+            # decoder: p(z1 | z2)
+            self.p_z1_layers = nn.Sequential(
+                GatedDense(self.args.z2_size, 300),
+                GatedDense(300, 300)
+            )
+
+            self.p_z1_mean = nn.Linear(300, self.args.z1_size)
+            self.p_z1_logvar = NonLinear(300, self.args.z1_size,
+                                         activation=nn.Hardtanh(min_val=-6., max_val=2.))
+
+            # decoder: p(x | z1, z2)
+            self.p_x_layers_z1 = nn.Sequential(
+                GatedDense(self.args.z1_size, 300)
+            )
+            self.p_x_layers_z2 = nn.Sequential(
+                GatedDense(self.args.z2_size, 300)
+            )
+            self.p_x_layers_joint = nn.Sequential(
+                GatedDense(2 * 300, 300)
+            )
+
+
 
     def reparameterize(self, mean, logvar, z=None, ns=0):
         std = logvar.mul(0.5).exp()
@@ -1558,6 +1602,50 @@ class AdaVAEModel(GPT2LMHeadModel):
         if self.reg_loss == "quantize":
             # obtain latent variable z by coodebook
             quantized_loss, z, perplexity, encoding = self.codebook(latent_mean)
+        elif self.reg_loss == "vamp":
+            z2_forward = self.q_z2_layers(latent_mean)
+            z2_q_mean, z2_q_logvar = self.q_z2_mean(z2_forward), self.q_z2_logvar(z2_forward)
+            z2_q = self.reparameterize(z2_q_mean, z2_q_logvar)
+
+            # z1 ~ q(z1 | x, z2)
+            z1_forward = self.q_z1_layers_x(latent_mean)
+            z2 = self.q_z1_layers_z2(z2_q)
+
+            h = torch.cat((latent_mean, z2), 1)
+
+            h = self.q_z1_layers_joint(h)
+            z1_q_mean = self.q_z1_mean(h)
+            z1_q_logvar = self.q_z1_logvar(h)
+
+            z1_q = self.reparameterize(z1_q_mean, z1_q_logvar)
+
+            # p(z1 | z2)
+            z2 = self.p_z1_layers(z2_q)
+
+            z1_p_mean, z1_p_logvar = self.p_z1_mean(z2), self.p_z1_logvar(z2)
+
+            # x_mean = p(x|z1,z2)
+            z1 = self.p_x_layers_z1(z1_q)
+
+            z2 = self.p_x_layers_z2(z2_q)
+
+            h = torch.cat((z1, z2), 1)
+
+            h = self.p_x_layers_joint(h)
+
+            posterior_mean, posterior_logvar = self.p_x_mean(h), self.p_x_logvar(h)
+            # KL
+            log_p_z1 = log_Normal_diag(z1_q, z1_p_mean, z1_p_logvar, dim=1)
+            log_q_z1 = log_Normal_diag(z1_q, z1_q_mean, z1_q_logvar, dim=1)
+            log_p_z2 = self.log_p_z2(z2_q)
+            log_q_z2 = log_Normal_diag(z2_q, z2_q_mean, z2_q_logvar, dim=1)
+            vamp_kld = -(log_p_z1 + log_p_z2 - log_q_z1 - log_q_z2)
+
+            if from_mean:
+                z = latent_mean
+            else:
+                z = self.reparameterize(latent_mean, latent_logvar)
+
 
         transformer_outputs = self.transformer(input_ids,
                                                past=past,
@@ -1585,6 +1673,8 @@ class AdaVAEModel(GPT2LMHeadModel):
             regularization_loss = self.symlog_loss(posterior_mean, posterior_logvar)
         elif self.reg_loss == "quantize":
             regularization_loss = quantized_loss
+        elif self.reg_loss == "vamp":
+            regularization_loss = vamp_kld
         else:
             raise TypeError("No such regularization loss implemented !")
         outputs = outputs + (regularization_loss, posterior_mean, posterior_logvar)

@@ -106,9 +106,9 @@ parser.add_argument('--beta_latent', default=0.50, type=float)
 parser.add_argument('--beta_warmup', type=int, default=2000)
 
 ## generation
-parser.add_argument('--top_k', default=10, type=int)
-parser.add_argument('--top_p', default=0.95, type=float)
-parser.add_argument('--temperature', default=0.9, type=float)
+parser.add_argument('--top_k', default=100, type=int)
+parser.add_argument('--top_p', default=0.0, type=float)
+parser.add_argument('--temperature', default=0.5, type=float)
 parser.add_argument('--test_flag', default=0, type=int)
 
 ## trigger
@@ -121,6 +121,7 @@ parser.add_argument('--add_mem', action="store_true")
 parser.add_argument('--add_softmax', action="store_true")
 parser.add_argument('--finetune_enc', action="store_true")
 parser.add_argument('--finetune_dec', action="store_true")
+parser.add_argument('--activate_dec', action="store_true")
 parser.add_argument('--attn_proj_vary', action="store_true")
 parser.add_argument('--save_all', action="store_true", help="save full parameters of the model")
 
@@ -435,7 +436,7 @@ def main(args):
     logging = Logger(os.path.join(save_folder, logging_file))
 
     cls_state = torch.load("./cls_train_out/oracle_cls_best.pt")
-    state = torch.load(os.path.join(load_folder, 'model_latest.pt'))  # , map_location='cpu' model_latest.pt
+    state = torch.load(os.path.join(load_folder, 'model_latest.pt'), map_location=device)  # , map_location='cpu' model_latest.pt
     if 'module' in list(state.keys())[0]:  # model_path is data parallel model with attr 'module'
         state_copy = copy.copy(state)
         keys = state_copy.keys()
@@ -489,6 +490,10 @@ def main(args):
             for _, parameter in model.transformer.named_parameters():
                 parameter.requires_grad = True
             model.encoder = unfreeze_GPT2_adapters(model.encoder, encoder_unfreeze_modules)
+    elif args.activate_dec:
+        model.encoder = unfreeze_GPT2_adapters(model.encoder, encoder_unfreeze_modules)
+        for name, param in model.named_parameters():
+            param.requires_grad = True
     else:
         model.encoder = unfreeze_GPT2_adapters(model.encoder, encoder_unfreeze_modules)
         model.transformer = unfreeze_GPT2_adapters(model.transformer, decoder_unfreeze_modules)
@@ -765,7 +770,7 @@ def main(args):
     elif args.do_cg:
         conditional_generate(args, model, tokenizer, args.label, args.n_samples, args.eval_output_dir, device)
     else:
-        max_val_batches = 200
+        max_val_batches = 500
         logging.info("Begin Evaluation")
         model.eval()
         evaluate(args, model, tokenizer, logging, val_loader, max_val_batches,
@@ -773,8 +778,8 @@ def main(args):
 
 if __name__=="__main__":
     args = parser.parse_args()
-    args = parser.parse_args('--batch-sizes 60 --max_length 32 --add_attn --do_train --iterations 40000 --n_label 3 --adapter_size 128 --latent_size 32 --experiment '
-                             'yelp_polarity_iter10000_as128_scalar1.0_cycle-auto_prenc-start_wsTrue_lg-averaged_attn_add_attn_beta1.0_reg-kld_attn_mode-none_ffn_option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-32_optFalse_zrate-0.25_fb-1sd-42_3.12'.split())
-    # args = parser.parse_args(
-    #     '--batch-sizes 90 --load_dir train_out --experiment yelp_polarity_3.12_label-3_add_attn --do_cg --label 0 --max_length 32 --n_label 3 --n_samples 50 --add_attn --iterations 20 --adapter_size 128 --latent_size 32'.split())
+    # args = parser.parse_args('--batch-sizes 60 --max_length 32 --add_attn --do_train --iterations 40000 --n_label 3 --adapter_size 128 --latent_size 32 --experiment '
+    #                          'yelp_polarity_iter10000_as128_scalar1.0_cycle-auto_prenc-start_wsTrue_lg-averaged_attn_add_attn_beta1.0_reg-kld_attn_mode-none_ffn_option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-32_optFalse_zrate-0.25_fb-1sd-42_3.12'.split())
+    args = parser.parse_args(
+        '--batch-sizes 90 --load_dir train_out --no_gpu --experiment yelp_polarity_3.13_label-3_add_attn --max_length 32 --n_label 3 --add_attn --iterations 20 --adapter_size 128 --latent_size 32'.split())
     main(args)

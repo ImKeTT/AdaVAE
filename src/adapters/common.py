@@ -23,7 +23,7 @@ class AdapterConfig(NamedTuple):
     attn_mode: str # 'prefix', 'adapter', 'lora', 'none'
     latent_gen: str # 'averaged_attn', 'linear'
     attn_option: str
-    mid_dim: int
+    mid_dim: int # prefix middle dimension
     attn_bn: int
     prefix_dropout: float
     tune_enc: bool

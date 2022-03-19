@@ -52,6 +52,8 @@ parser.add_argument('--pre_enc_iter', type=str, default=None,
 ## mode options
 parser.add_argument('--adapter_size', type=int, default=256,
                     help="Hidden size of GPT2 encoder/decoder adapter")
+parser.add_argument('--prefix_size', type=int, default=30,
+                    help="Hidden size of GPT2 encoder/decoder prefix")
 parser.add_argument('--latent_size', type=int, default=768,
                     help="Hidden size of latent code")
 parser.add_argument('--encoder_n_layer', type=int, default=6,
@@ -65,7 +67,7 @@ parser.add_argument('--class_num', type=int, default=2,
 parser.add_argument('--adapter_scalar', type=str, default="1.0",
                     help="adapter scalar")
 parser.add_argument('--ffn_option', type=str, default="parallel_ffn",
-                    choices=['sequential', 'parallel_attn', 'parallel_ffn', 'pfeiffer'],
+                    choices=['sequential_attn', 'sequential_ffn', 'parallel_attn', 'parallel_ffn', 'houlsby', 'pfeiffer'],
                     help="adapter type option")
 parser.add_argument('--latent_gen', type=str, default="averaged_attn",
                     help="method for encoder to latent space, averaged_attn for average attention from "
@@ -75,7 +77,7 @@ parser.add_argument('--attn_mode', type=str, default="prefix",
                     choices=['prefix', 'adapter', 'lora', 'none'],
                     help="attention transfer type")
 parser.add_argument('--reg_loss', type=str, default="kld",
-                    choices=['kld', 'adversarial', 'symlog'],
+                    choices=['kld', 'adversarial', 'symlog', 'quantize', 'vamp'],
                     help="regularization loss for latent space")
 
 ## training paramters
@@ -91,7 +93,7 @@ parser.add_argument('--data-dir', type=str, default='data')
 parser.add_argument('--out-dir', type=str, default='out')
 parser.add_argument('--from_optimus', type=str, default=None,
                     help="file to load pre-trained transformer from Optimus GPT-2")
-parser.add_argument('--adapter_init', type=str, default='lora',
+parser.add_argument('--adapter_init', type=str, default='bert',
                     choices=['lora', 'bert', 'lisa', 'other'],
                     help="parameter initialization method for adapter layers.")
 parser.add_argument('--workers', default=2, type=int, metavar='N',
@@ -296,10 +298,15 @@ def train(args):
 
     opt = True if not args.from_optimus is None else False
     ws = True if args.weighted_sample else False
+    fine_tune = False
+    if args.finetune_enc and args.finetune_dec:
+        fine_tune = True
+
+    parameter_efficient_size = f"{args.adapter_size}-{args.prefix_size}" if args.attn_mode == "prefix" else f"{args.adapter_size}"
     # logging
-    experiment = f"{args.dataset}_iter{args.iterations}_as{args.adapter_size}_scalar{args.adapter_scalar}_cycle-{args.cycle}_prenc-{args.pre_enc_iter}_ws{ws}" \
+    experiment = f"{args.dataset}_iter{args.iterations}_as{parameter_efficient_size}_scalar{args.adapter_scalar}_cycle-{args.cycle}_prenc-{args.pre_enc_iter}_ws{ws}" \
                  f"_lg-{args.latent_gen}_{fusion_type}_beta{args.beta_0}_reg-{args.reg_loss}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}_" \
-                 f"enc_layer-{args.encoder_n_layer}_dec_layer-{args.decoder_n_layer}_zdim-{args.latent_size}_opt{opt}_zrate-{args.kl_rate}_fb-{args.fb}" \
+                 f"enc_layer-{args.encoder_n_layer}_dec_layer-{args.decoder_n_layer}_zdim-{args.latent_size}_opt{opt}_ft{fine_tune}_zrate-{args.kl_rate}_fb-{args.fb}" \
                  f"sd-{args.seed}_{now.month}.{now.day}"
     save_folder = os.path.join(args.out_dir, experiment)
     os.makedirs(os.path.join(save_folder, 'ckpt/model'), exist_ok=True)
@@ -307,9 +314,9 @@ def train(args):
     t_writer = SummaryWriter(os.path.join(save_folder, 'train'), flush_secs=5)
     v_writer = SummaryWriter(os.path.join(save_folder, 'val'), flush_secs=5)
     # importlib.reload(logging)
-    logging_file = f"{args.dataset}_init-{args.adapter_init}_ada-scalar{args.adapter_scalar}_cycle-{args.cycle}_prenc-{args.pre_enc_iter}_as{args.adapter_size}_ws{ws}" \
+    logging_file = f"{args.dataset}_init-{args.adapter_init}_ada-scalar{args.adapter_scalar}_cycle-{args.cycle}_prenc-{args.pre_enc_iter}_as{parameter_efficient_size}_ws{ws}" \
                    f"_lg-{args.latent_gen}_{fusion_type}_beta{args.beta_0}_reg-{args.reg_loss}_attn_mode-{args.attn_mode}_ffn_option-{args.ffn_option}_" \
-                   f"beta{args.beta_0}_enc_layer-{args.encoder_n_layer}_dec_layer-{args.decoder_n_layer}_zdim-{args.latent_size}_opt{opt}_z" \
+                   f"beta{args.beta_0}_enc_layer-{args.encoder_n_layer}_dec_layer-{args.decoder_n_layer}_zdim-{args.latent_size}_opt{opt}_ft{fine_tune}_z" \
                    f"rate-{args.kl_rate}_fb-{args.fb}_sd-{args.seed}_{now.month}.{now.day}.log"
     logging = Logger(os.path.join(save_folder, logging_file))
     # logging.basicConfig(filename=os.path.join(save_folder, 'train.log'),
@@ -367,13 +374,13 @@ def train(args):
                                attn_mode=args.attn_mode,
                                latent_gen=args.latent_gen,
                                attn_option='none',
-                               mid_dim=30,
+                               mid_dim=args.prefix_size,
                                attn_bn=25,
                                prefix_dropout=0.1,
                                tune_enc=args.finetune_enc,
                                tune_dec=args.finetune_dec)
-    assert ada_config.ffn_option in ['sequential', 'parallel_attn', 'parallel_ffn',
-                                     'pfeiffer'], 'expect proper ffn_option'
+    # assert ada_config.ffn_option in ['sequential', 'parallel_attn', 'parallel_ffn',
+    #                                  'pfeiffer'], 'expect proper ffn_option'
 
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
 
@@ -778,14 +785,15 @@ def train(args):
             logging.info(sent)
 
         AdaVAE.train()
-        return loss_bpe
+        return nll, loss_bpe, elbo, ppl_bpe, ppl_elbo, ppl_word, reg, mi, n_au
 
-    cyclic_weights = frange_cycle_zero_linear(args.iterations, start=0.0, stop=args.beta_0,
+    cyclic_weights = frange_cycle_zero_linear(args.iterations+1, start=0.0, stop=args.beta_0,
                                               n_cycle=4, ratio_increase=0.25, ratio_zero=0.5) #frange_cycle_linear(args.iterations, start=0.0, stop=args.beta_0, n_cycle=4, ratio=0.5)
 
-    best_val_loss = 99999.
+    best_val_nll, best_val_loss_bpe, best_val_elbo, best_val_ppl_bpe, best_val_ppl_elbo, \
+    best_val_ppl_word, best_val_reg, best_val_mi, best_val_n_au = 99999., 0., 0., 0., 0., 0., 0., 0., 0.
     et = 0
-    while num_iters < args.iterations:
+    while (num_iters < args.iterations) and et < args.early_stop:
         # Run epoch
         st = time.time()
 
@@ -869,7 +877,7 @@ def train(args):
                 #     t_writer.add_scalar('ae_kl', kl_loss, num_iters)
 
                 st = time.time()
-                end = num_iters >= args.iterations - 1
+                end = num_iters >= args.iterations
 
 
                 if end:
@@ -881,14 +889,26 @@ def train(args):
                 #     beta = args.beta_0
                 #     logging.info('KL annealing restart')
 
-                log_interval = 3000 if args.iterations <= 30000 else int(args.iterations / 5)
+                log_interval = 3000 if args.iterations <= 30000 else int(args.iterations / 10)
                 if num_iters % log_interval == 0:
                     logging.info("test set")
                     _ = val_step(test_loader)
                     logging.info("validation set")
-                    val_loss = val_step(val_loader)
-                    if val_loss < best_val_loss:
-                        best_val_loss = val_loss
+                    val_nll, val_loss_bpe, val_elbo, val_ppl_bpe, val_ppl_elbo, val_ppl_word, \
+                    val_reg, val_mi, val_n_au = val_step(val_loader)
+                    if val_nll < best_val_nll:
+                        best_val_nll, best_val_loss_bpe, best_val_elbo, best_val_ppl_bpe, best_val_ppl_elbo, \
+                        best_val_ppl_word, best_val_reg, best_val_mi, best_val_n_au = val_nll, val_loss_bpe, val_elbo, \
+                                                                                      val_ppl_bpe, val_ppl_elbo, val_ppl_word, val_reg, val_mi, val_n_au
+                        if args.save_all:
+                            save_orderdict = AdaVAE.state_dict()
+                        else:
+                            save_orderdict = collections.OrderedDict()
+                            for name, parameter in AdaVAE.named_parameters():
+                                if parameter.requires_grad:
+                                    save_orderdict[name] = parameter
+                        logging.info("Saving model w.r.t the best nll.")
+                        torch.save(save_orderdict, os.path.join(save_folder, 'model_best_val.pt'))
                     else:
                         et += 1
 
@@ -932,19 +952,30 @@ def train(args):
             logging.info("Training loop. The ith epoch completed: %d" % e)
 
     ## last iteration testing
+    logging.info("\n------------------------------------------------------")
     logging.info("test set")
     _ = val_step(test_loader)
     logging.info("validation set")
     _ = val_step(val_loader)
+    logging.info("\n-------------------BEST RESULTS-----------------------")
+    logging.info('Best nll      : %.4f' % best_val_nll)
+    logging.info('Best loss     : %.4f' % best_val_loss_bpe)
+    logging.info('Best elbo     : %.4f' % best_val_elbo)
+    logging.info('Best ppl_bpe  : %.4f' % best_val_ppl_bpe)
+    logging.info('Best ppl_elbo : %.4f' % best_val_ppl_elbo)
+    logging.info('Best ppl_word : %.4f' % best_val_ppl_word)
+    logging.info('Best reg_loss : %.4f' % best_val_reg)
+    logging.info('Best MI       : %.4f' % best_val_mi)
+    logging.info('Best AU       : %.4f' % best_val_n_au)
 
-    if args.save_all:
-        save_orderdict = AdaVAE.state_dict()
-    else:
-        save_orderdict = collections.OrderedDict()
-        for name, parameter in AdaVAE.named_parameters():
-            if parameter.requires_grad:
-                save_orderdict[name] = parameter
-    torch.save(save_orderdict, os.path.join(save_folder, 'model_latest.pt'))
+    # if args.save_all:
+    #     save_orderdict = AdaVAE.state_dict()
+    # else:
+    #     save_orderdict = collections.OrderedDict()
+    #     for name, parameter in AdaVAE.named_parameters():
+    #         if parameter.requires_grad:
+    #             save_orderdict[name] = parameter
+    # torch.save(save_orderdict, os.path.join(save_folder, 'model_latest.pt'))
     logging.info('Training complete.')
 
 if __name__=="__main__":

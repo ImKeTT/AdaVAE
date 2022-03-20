@@ -845,6 +845,7 @@ class Encoder(GPT2Model):
         self.output_hidden_states = False
         self.output_attentions = False ## True is return hidden_states
         self.output_past = False
+        self.latent_representations = False
 
         ## wte is word token embedding
         self.wte = nn.Embedding(config.vocab_size, config.n_embd)
@@ -1016,8 +1017,10 @@ class Encoder(GPT2Model):
             attention_output_shape = input_shape[:-1] + (-1,) + all_attentions[0].shape[-2:]
             all_attentions = tuple(t.view(*attention_output_shape) for t in all_attentions)
             outputs = outputs + (all_attentions,)
+        if self.latent_representations:
+            outputs = outputs + (representations,)
 
-        return outputs  # mean, logvar, last hidden state, (presents), (all hidden_states), (attentions)
+        return outputs  # mean, logvar, last hidden state, (presents), (all hidden_states), (attentions), (representations)
 
 
 class Decoder(GPT2Model):

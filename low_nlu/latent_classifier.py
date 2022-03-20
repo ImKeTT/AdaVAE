@@ -20,9 +20,9 @@ from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, AdamW, get_
 
 
 class AdaVAEforLatentClassification(nn.Module):
-    def __init__(self, args, config, AdapterConfig, use_mean=False):
+    def __init__(self, args, config, encoder, use_mean=False):
         super(AdaVAEforLatentClassification, self).__init__()
-        self.encoder = Encoder(config, AdapterConfig)
+        self.encoder = encoder
         self.encoder.latent_representations = True
 
         self.n_label = args.n_label
@@ -58,5 +58,5 @@ class AdaVAEforLatentClassification(nn.Module):
             else:
                 loss_fct = nn.CrossEntropyLoss()
                 loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
-            outputs = (loss,) + outputs
-        return outputs, representations
+            outputs = (loss, representations) + outputs
+        return outputs

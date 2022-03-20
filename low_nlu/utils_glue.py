@@ -24,7 +24,7 @@ import sys
 from io import open
 from collections import defaultdict
 import numpy as np
-import pdb
+# import pdb
 
 from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import matthews_corrcoef, f1_score

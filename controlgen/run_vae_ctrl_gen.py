@@ -106,9 +106,9 @@ parser.add_argument('--beta_latent', default=0.50, type=float)
 parser.add_argument('--beta_warmup', type=int, default=2000)
 
 ## generation
-parser.add_argument('--top_k', default=100, type=int)
-parser.add_argument('--top_p', default=0.0, type=float)
-parser.add_argument('--temperature', default=0.5, type=float)
+parser.add_argument('--top_k', default=10, type=int)
+parser.add_argument('--top_p', default=0.5, type=float)
+parser.add_argument('--temperature', default=1.0, type=float)
 parser.add_argument('--test_flag', default=0, type=int)
 
 ## trigger
@@ -492,7 +492,7 @@ def main(args):
             model.encoder = unfreeze_GPT2_adapters(model.encoder, encoder_unfreeze_modules)
     elif args.activate_dec:
         model.encoder = unfreeze_GPT2_adapters(model.encoder, encoder_unfreeze_modules)
-        for name, param in model.named_parameters():
+        for name, param in model.transformer.named_parameters():
             param.requires_grad = True
     else:
         model.encoder = unfreeze_GPT2_adapters(model.encoder, encoder_unfreeze_modules)
@@ -778,8 +778,10 @@ def main(args):
 
 if __name__=="__main__":
     args = parser.parse_args()
-    # args = parser.parse_args('--batch-sizes 60 --max_length 32 --add_attn --do_train --iterations 40000 --n_label 3 --adapter_size 128 --latent_size 32 --experiment '
-    #                          'yelp_polarity_iter10000_as128_scalar1.0_cycle-auto_prenc-start_wsTrue_lg-averaged_attn_add_attn_beta1.0_reg-kld_attn_mode-none_ffn_option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-32_optFalse_zrate-0.25_fb-1sd-42_3.12'.split())
-    args = parser.parse_args(
-        '--batch-sizes 90 --load_dir train_out --no_gpu --experiment yelp_polarity_3.13_label-3_add_attn --max_length 32 --n_label 3 --add_attn --iterations 20 --adapter_size 128 --latent_size 32'.split())
+    args = parser.parse_args('--batch-sizes 45 --activate_dec --max_length 32 --add_attn --do_train --iterations 30000 --n_label 3 --adapter_size 128 --latent_size 32 --experiment '
+                             'yelp_polarity_iter10000_as128_scalar1.0_cycle-auto_prenc-start_wsTrue_lg-averaged_attn_add_attn_beta1.0_reg-kld_attn_mode-none_ffn_option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-32_optFalse_zrate-0.25_fb-1sd-42_3.12'.split())
+    # args = parser.parse_args(
+    #     '--batch-sizes 90 --load_dir train_out --no_gpu --experiment yelp_polarity_3.13_label-3_add_attn --max_length 32 --n_label 1 --add_attn --add_mem --iterations 20 --adapter_size 128 --latent_size 32'.split())
+    # args = parser.parse_args(
+    #     '--batch-sizes 90 --load_dir train_out --do_cg --no_gpu --experiment yelp_polarity_3.13_label-3_add_attn --max_length 32 --n_label 1 --add_attn --iterations 20 --adapter_size 128 --latent_size 32'.split())
     main(args)

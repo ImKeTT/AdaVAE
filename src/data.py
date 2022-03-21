@@ -244,6 +244,24 @@ class DialogGenerationDataset(Dataset):
             dl = f.readlines()
         return DialogGenerationDataset(dl)
 
+class DictDataset(Dataset):
+    def __init__(self, dl):
+        self.text_len = []
+        self.dl = dl
+        self.length = len(self.dl)
+
+    def __getitem__(self, index: int) -> dict:
+        ## add BOS and EOS special token
+        data_dict = {}
+        data_dict['guid'] = self.dl[index].guid
+        data_dict['text_a'] = self.dl[index].text_a
+        data_dict['label'] = int(self.dl[index].label)
+
+        return data_dict
+
+    def __len__(self):
+        return self.length
+
 def collate_fn(samples: dict, eos_id: list, tokenizer):
     """ Creates a batch out of samples for direct input"""
     x_max_len = max(map(lambda s: len(s['x']), samples))

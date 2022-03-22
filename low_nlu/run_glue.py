@@ -20,14 +20,14 @@ from src.adapters.vae import *
 from src.utils import *
 from apex import amp
 from src.adapters.common import AdapterConfig
-from src.data import ConditionalGenerationDataset
+from src.data import DictDataset
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, AdamW, get_linear_schedule_with_warmup, Conv1D
 from utils_glue import (compute_metrics, convert_examples_to_features,
                         output_modes, processors)
 
 
 
-os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+# os.environ["CUDA_VISIBLE_DEVICES"] = '1'
 
 parser = argparse.ArgumentParser()
 
@@ -38,7 +38,7 @@ parser.add_argument("--seed", type=int, default=42)
 # parser.add_argument('--data_type', type=str, default='t1', choices=['t' + str(i) for i in range(9)], help="t: type")
 parser.add_argument('--model_type', type=str, default='cvae', choices=['cvae'])
 parser.add_argument('--iterations', type=int, default=10000 * 3)
-parser.add_argument('--dataset', type=str, default='yelp_polarity', choices=['yelp_polarity', 'imdb_polarity'],
+parser.add_argument('--dataset', type=str, default='yelp', choices=['yelp', 'cola', 'sst-2'],
                     help="Dataset to use for training")
 parser.add_argument('--warmup', type=int, default=1000,
                     help="Amount of iterations to warmup, then decay. (-1 for no warmup and decay)")
@@ -48,7 +48,7 @@ parser.add_argument('--adapter_size', type=int, default=128,
                     help="Hidden size of GPT2 encoder/decoder adapter")
 parser.add_argument('--latent_size', type=int, default=32,
                     help="Hidden size of latent code")
-parser.add_argument('--encoder_n_layer', type=int, default=6,
+parser.add_argument('--encoder_n_layer', type=int, default=8,
                     help="attention layer number of GPT-2 encoder")
 parser.add_argument('--decoder_n_layer', type=int, default=12,
                     help="attention layer number of GPT-2 decoder")
@@ -68,8 +68,11 @@ parser.add_argument('--hidden_dropout_prob', type=float, default=0.1,
                     help="dropout rate for classifier logits")
 
 ## training paramters
-parser.add_argument('--batch_sizes', type=int, default=100,
+parser.add_argument('--batch_sizes', nargs='+', type=int, default=[10],
                     help='batch size per GPU. Lists the schedule.')
+parser.add_argument('--percentage_per_label', type=float, default=1.0)
+parser.add_argument("--sample_per_label", type=int, default=-1,
+                        help="Set this value, if you are using a subset of training dataset, and a fixed number of samples are specified.")
 parser.add_argument('--eval_batch_size', type=int, default=100,
                     help='batch size per GPU. Lists the schedule.')
 parser.add_argument('--seq-lens', nargs='+', type=int, default=[30],
@@ -79,8 +82,8 @@ parser.add_argument('--max_length', type=int, default=25,
 parser.add_argument('--label', type=int, default=0)
 parser.add_argument('--n_samples', type=int, default=50)
 
-parser.add_argument('--data-dir', type=str, default='data')
-parser.add_argument('--out-dir', type=str, default='train_out')
+parser.add_argument('--data_dir', type=str, default='data')
+parser.add_argument('--out_dir', type=str, default='train_out')
 parser.add_argument('--load_dir', type=str, default='../src/out')
 parser.add_argument('--experiment', type=str, default=None)
 parser.add_argument('--eval_output_dir', type=str, default='eval_out')
@@ -109,12 +112,11 @@ parser.add_argument('--beta_warmup', type=int, default=2000)
 ## trigger
 parser.add_argument('--load', action="store_true")
 parser.add_argument('--do_train', action="store_true")
+parser.add_argument('--use_mean', action="store_true")
 parser.add_argument('--feature_based', action="store_true", help="freeze backbone network")
 parser.add_argument('--finetune_enc', action="store_true")
 parser.add_argument('--attn_proj_vary', action="store_true")
 parser.add_argument('--save_all', action="store_true", help="save full parameters of the model")
-
-
 
 
 def load_and_cache_examples(args, task, tokenizer, logger, evaluate=False):
@@ -171,8 +173,14 @@ def load_and_cache_examples(args, task, tokenizer, logger, evaluate=False):
     dataset = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
     return dataset
 
-def tokenize(data_dict, tokenizer, device, args):
-    pass
+
+def tokenize(input_example, tokenizer, device, max_length):
+    x_tokenized = tokenizer(input_example['text_a'], padding=True, truncation=True,
+                                 max_length=max_length,
+                                 return_tensors='pt')
+    input_ids = x_tokenized['input_ids'].to(device)
+    attention_mask = x_tokenized['attention_mask'].to(device)
+    return input_ids, attention_mask
 
 def compute_loss(device, model, input_tokens, att_mask, labels):
     input_tokens = input_tokens.to(device)
@@ -200,16 +208,13 @@ def train_step(device, model, optimizer, input_tokens, att_mask, labels):
     return loss, acc
 
 def test_step(model, input_tokens, att_mask, y_hat):
-    input_tokens = input_tokens
-    att_mask = att_mask
-
     loss, representations, logits = model(input_ids=input_tokens, labels=y_hat, attention_mask=att_mask)
-
     a, y = torch.max(logits, dim=1)
-    test_acc = accuracy_score(y.cpu(), y_hat.cpu())
-    test_recall = recall_score(y.cpu(), y_hat.cpu(), average='macro')
-    test_precision = precision_score(y.cpu(), y_hat.cpu(), average='macro')
-    test_f1 = f1_score(y.cpu(), y_hat.cpu(), average='macro')
+    ## y_true, y_pred
+    test_acc = accuracy_score(y_hat.cpu(), y.cpu())
+    test_recall = recall_score(y_hat.cpu(), y.cpu(), average='macro')
+    test_precision = precision_score(y_hat.cpu(), y.cpu(), average='macro')
+    test_f1 = f1_score(y_hat.cpu(), y.cpu(), average='macro')
     return loss, test_acc, test_recall, test_precision, test_f1
 
 def train(args):
@@ -261,23 +266,34 @@ def train(args):
     # AdaVae_average_attn = AverageSelfAttention(config.n_embd, ada_config)
     endoftext = tokenizer.convert_tokens_to_ids("<|endoftext|>")
 
-    model = AdaVAEforLatentClassification(args, config, AdaVae_encoder, AdapterConfig, use_mean=False)
+    model = AdaVAEforLatentClassification(args, config, AdaVae_encoder, use_mean=args.use_mean)
 
     ## load pre-trained weights
-    init_para_frompretrained(model.transformer, gpt2_model.transformer, share_para=True)
     init_para_frompretrained(model.encoder, gpt2_model.transformer, share_para=True)
-    model.lm_head.weight = gpt2_model.lm_head.weight
 
-    ## load ckpt
-    print('Loading model weights...')
-    experiment = args.experiment
-    load_folder = os.path.join(args.load_dir, experiment)
-    if args.add_attn and args.add_mem:
-        final_folder = f"{args.dataset}_{date}_label-{args.n_label}_add_attn_mem"
-    elif args.add_attn:
-        final_folder = f"{args.dataset}_{date}_label-{args.n_label}_add_attn"
-    elif args.add_mem:
-        final_folder = f"{args.dataset}_{date}_label-{args.n_label}_add_mem"
+    if args.load:
+        ## load ckpt
+        print('Loading model weights...')
+        experiment = args.experiment
+        load_folder = os.path.join(args.load_dir, experiment)
+        state = torch.load(os.path.join(load_folder, 'model_latest.pt'),
+                           map_location=device)  # , map_location='cpu' model_latest.pt
+        if 'module' in list(state.keys())[0]:  # model_path is data parallel model with attr 'module'
+            state_copy = copy.copy(state)
+            keys = state_copy.keys()
+            for k in keys:
+                state[k.replace('module.', '')] = state.pop(k)
+        ## load trained parameters
+        if not args.save_all:
+            model_dict = model.state_dict()
+            additional_dict = {k: v for k, v in state.items() if k in model_dict}
+            model_dict.update(additional_dict)
+            model.load_state_dict(model_dict)  ## only loads adapters and latent connectors from ckpt
+        else:
+            model.load_state_dict(state)
+
+    final_folder = f"{args.dataset}_iter{args.iterations}_ft-{args.finetune_enc}_as-{args.adapter_size}_feature-{args.feature_based}_ppl-{args.percentage_per_label}_{date}"
+
     save_folder = os.path.join(args.out_dir, final_folder)
     os.makedirs(save_folder, exist_ok=True)
     t_writer = SummaryWriter(os.path.join(save_folder, 'train'), flush_secs=5)
@@ -285,35 +301,19 @@ def train(args):
     logging_file = f"{args.dataset}_glue.log"
     logging = Logger(os.path.join(save_folder, logging_file))
 
-    state = torch.load(os.path.join(load_folder, 'model_latest.pt'),
-                       map_location=device)  # , map_location='cpu' model_latest.pt
-    if 'module' in list(state.keys())[0]:  # model_path is data parallel model with attr 'module'
-        state_copy = copy.copy(state)
-        keys = state_copy.keys()
-        for k in keys:
-            state[k.replace('module.', '')] = state.pop(k)
-    ## load trained parameters
-    if not args.save_all:
-        model_dict = model.state_dict()
-        additional_dict = {k: v for k, v in state.items() if k in model_dict}
-        model_dict.update(additional_dict)
-        model.load_state_dict(model_dict)  ## only loads adapters and latent connectors from ckpt
-    else:
-        model.load_state_dict(state)
     model = model.to(device)
 
     model_params = num_params(model)
     logging.info(f'model params: {model_params}')
 
     # fix pre-trained parameters before certain iterations
-    args.warmup = args.beta_warmup = int(args.iterations / 6)
+    args.warmup = args.beta_warmup = int(args.iterations / 5)
 
     new_pars = ['classifier']
     if not args.feature_based:
         new_pars1 = ['c_z', 'attention_weights', 'mean', 'logvar', 'input_proj', 'attn_proj', 'Nu_fc1', 'Nu_fc2',
                 'lm_head_rep', 'lm_head']
-        new_pars2 = ['label_embedding', 'latent_generator', 'linear', 'latent_classifier', 'latent_discriminator',
-                 'conv1']
+        new_pars2 = ['label_embedding', 'latent_generator', 'linear', 'latent_classifier', 'latent_discriminator', 'conv1']
         new_pars.extend(new_pars1)
         new_pars.extend(new_pars2)
 
@@ -346,50 +346,42 @@ def train(args):
 
     logging.info('Setup data...')
     # Batch and sequence length schedule
-    assert len(args.batch_sizes) == len(args.seq_lens)
-    batch_schedule = list(zip(map(int, args.batch_sizes), map(int, args.seq_lens)))
-    assert len(batch_schedule) <= 2, 'Currently not supporting multiple schedules'
-    args.switch_time = 0
-    cur_b_schedule = len(batch_schedule) - 1 if args.switch_time == 0 else 0
-    logging.info('Batch schedule')
-    logging.info(batch_schedule)
+    processor = processors[args.dataset]()
+    if args.dataset == "yelp":
+        prefix_data_path = "../data/yelp_polarity"
+    else:
+        prefix_data_path = f"./glue_data/{args.dataset.upper()}"
     train_loader = DataLoader(
-        ConditionalGenerationDataset.from_file(f"../data/{args.dataset}/train.txt"),
-        batch_size=batch_schedule[cur_b_schedule][0],
+        DictDataset(processor.get_train_examples(prefix_data_path, args.percentage_per_label, args.sample_per_label)),
+        batch_size=args.batch_sizes[0],
         pin_memory=True,
-        drop_last=True,
-        num_workers=args.workers)
-    test_loader = DataLoader(
-        ConditionalGenerationDataset.from_file(f"../data/{args.dataset}/test.txt"),
-        batch_size=batch_schedule[-1][0],
-        pin_memory=True,
-        drop_last=True,
+        drop_last=False,
         num_workers=args.workers)
     val_loader = DataLoader(
-        ConditionalGenerationDataset.from_file(f"../data/{args.dataset}/valid.txt"),
-        batch_size=batch_schedule[-1][0],
+        DictDataset(processor.get_dev_examples(prefix_data_path)),
+        batch_size=args.batch_sizes[0],
         pin_memory=True,
-        drop_last=True,
+        drop_last=False,
         num_workers=args.workers)
     logging.info('Done.')
 
     def val_step(data_loader):
-        max_val_batches = 500
+        max_val_batches = 1000
         model.eval()
         val_acc_list = []
         val_loss_list = []
         val_prec_list, val_recall_list, val_f1_list = [], [], []
         with tqdm(total=min(len(data_loader), max_val_batches), desc="Evaluating Model") as pbar:
             for i, val_data_dict in enumerate(val_loader):
-                input_tokens, att_mask = tokenize(val_data_dict['x'], tokenizer, device, args)
-                y_hat = val_data_dict['y']
+                input_tokens, att_mask = tokenize(val_data_dict, tokenizer, device, args.max_length)
+                y_hat = torch.as_tensor(val_data_dict['label'], dtype=torch.long).to(device)
                 with torch.no_grad():
                     val_acc, val_recall, val_precision, val_f1, val_loss = test_step(model, input_tokens, att_mask, y_hat)
-                    val_acc_list.append(val_acc)
-                    val_loss_list.append(val_loss)
-                    val_prec_list.append(val_precision)
-                    val_recall_list.append(val_recall)
-                    val_f1_list.append(val_f1)
+                    val_acc_list.append(val_acc.item())
+                    val_loss_list.append(val_loss.item())
+                    val_prec_list.append(val_precision.item())
+                    val_recall_list.append(val_recall.item())
+                    val_f1_list.append(val_f1.item())
                 if i > max_val_batches:
                     break
                 pbar.update(1)
@@ -417,6 +409,14 @@ def train(args):
 
 
     if args.do_train:
+        # Batch and sequence length schedule
+        assert len(args.batch_sizes) == len(args.seq_lens)
+        batch_schedule = list(zip(map(int, args.batch_sizes), map(int, args.seq_lens)))
+        assert len(batch_schedule) <= 2, 'Currently not supporting multiple schedule'
+        args.switch_time = 0
+        cur_b_schedule = len(batch_schedule) - 1 if args.switch_time == 0 else 0
+        logging.info('Batch schedule')
+        logging.info(batch_schedule)
         logging.info('Wrapping models and optimizers...')
         # Apply linear scaling rule to increase batch size for short sequence training.
         lr_schedule = switch_schedule(linear_schedule(args), batch_schedule[cur_b_schedule][0] / batch_schedule[-1][0],
@@ -431,7 +431,7 @@ def train(args):
         num_iters = 0
         optimizer.zero_grad()
 
-        best_acc, best_prec, best_recall, best_f1 = 0., 0., 0., 0., 0.
+        best_acc, best_loss, best_prec, best_recall, best_f1 = 0., 0., 0., 0., 0.
         while num_iters < args.iterations:
             # Run epoch
             st = time.time()
@@ -444,8 +444,8 @@ def train(args):
             # train_iter = iter(train_loader); x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask = next(train_iter)
             with tqdm(total=len(train_loader)) as pbar:
                 for i, data_dict in enumerate(train_loader):
-                    input_tokens, att_mask = tokenize(data_dict['x'], tokenizer, device, args)
-                    labels = torch.tensor(data_dict['y']).to(device)
+                    input_tokens, att_mask = tokenize(data_dict, tokenizer, device, args.max_length)
+                    labels = torch.as_tensor(data_dict['label'], dtype=torch.long).to(device)
 
                     if args.warmup != -1:
                         scheduler.step()
@@ -470,9 +470,9 @@ def train(args):
                     num_iters += 1
                     pbar.update(1)
 
-                    if (num_iters + 1) % 4000 == 0:
-                        test_acc, test_loss, test_prec, test_recall, test_f1 = logging.info("test set")
-                        val_step(test_loader)
+                    log_var = 8000
+                    if (num_iters + 1) % log_var == 0:
+                        logging.info("test set")
                         logging.info("validation set")
                         val_acc, val_loss, val_prec, val_recall, val_f1 = val_step(val_loader)
                         if val_acc > best_acc:
@@ -507,8 +507,16 @@ def train(args):
         #         if parameter.requires_grad:
         #             save_orderdict[name] = parameter
         # torch.save(save_orderdict, os.path.join(save_folder, 'model_latest.pt'))
+        logging.info('best loss      : %.4f' % best_loss)
+        logging.info('best acc       : %.4f' % best_acc)
+        logging.info('best precision : %.4f' % best_prec)
+        logging.info('best recall    : %.4f' % best_recall)
+        logging.info('best f1        : %.4f' % best_f1)
         logging.info('Training complete.')
+    else:
+        _ = val_step(val_loader)
 
 if __name__=="__main__":
     args = parser.parse_args()
+    # args = parser.parse_args('--batch_sizes 10 --do_train --max_length 32 --dataset yelp --iterations 20 --adapter_size 128 --latent_size 32'.split())
     train(args)

@@ -217,12 +217,12 @@ class YelpProcessor(DataProcessor):
     def get_train_examples(self, data_dir, percentage_per_label=1.0, sample_per_label=0):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train", percentage_per_label, sample_per_label)
+            self._read_tsv(os.path.join(data_dir, "train.txt")), "train", percentage_per_label, sample_per_label)
 
     def get_dev_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "test.tsv")), "test", percentage_per_label=1.0, sample_per_label=5000)
+            self._read_tsv(os.path.join(data_dir, "test.txt")), "test", percentage_per_label=1.0, sample_per_label=500)
 
     def get_labels(self):
         """See base class."""

@@ -25,9 +25,9 @@ class AdaVAEforLatentClassification(nn.Module):
         self.encoder = encoder
         self.encoder.latent_representations = True
 
-        self.n_label = args.n_label
+        self.num_labels = args.label_size
 
-        self.classifier = nn.Linear(config.n_embd, self.n_label)
+        self.classifier = nn.Linear(config.n_embd, self.num_labels)
         self.dropout = nn.Dropout(args.hidden_dropout_prob)
         self.use_mean = use_mean
 

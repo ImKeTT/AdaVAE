@@ -98,7 +98,7 @@ parser.add_argument('--adapter_init', type=str, default='bert',
                     help="parameter initialization method for adapter layers.")
 parser.add_argument('--workers', default=2, type=int, metavar='N',
                     help='number of data loading workers')
-parser.add_argument('--early_stop', default=3, type=int,
+parser.add_argument('--early_stop', default=4, type=int,
                     help='early stopping validation step')
 
 ## metrics
@@ -788,7 +788,7 @@ def train(args):
         return nll, loss_bpe, elbo, ppl_bpe, ppl_elbo, ppl_word, reg, mi, n_au
 
     cyclic_weights = frange_cycle_zero_linear(args.iterations+1, start=0.0, stop=args.beta_0,
-                                              n_cycle=4, ratio_increase=0.25, ratio_zero=0.5) #frange_cycle_linear(args.iterations, start=0.0, stop=args.beta_0, n_cycle=4, ratio=0.5)
+                                              n_cycle=4, ratio_increase=0.25, ratio_zero=0.25) #frange_cycle_linear(args.iterations, start=0.0, stop=args.beta_0, n_cycle=4, ratio=0.5)
 
     best_val_nll, best_val_loss_bpe, best_val_elbo, best_val_ppl_bpe, best_val_ppl_elbo, \
     best_val_ppl_word, best_val_reg, best_val_mi, best_val_n_au = 99999., 0., 0., 0., 0., 0., 0., 0., 0.

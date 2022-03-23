@@ -215,7 +215,7 @@ def test_step(model, input_tokens, att_mask, y_hat):
     test_recall = recall_score(y_hat.cpu(), y.cpu(), average='macro')
     test_precision = precision_score(y_hat.cpu(), y.cpu(), average='macro')
     test_f1 = f1_score(y_hat.cpu(), y.cpu(), average='macro')
-    return loss, test_acc, test_recall, test_precision, test_f1
+    return test_acc, test_recall, test_precision, test_f1, loss
 
 def train(args):
     now = datetime.datetime.now()
@@ -376,6 +376,7 @@ def train(args):
                 input_tokens, att_mask = tokenize(val_data_dict, tokenizer, device, args.max_length)
                 y_hat = torch.as_tensor(val_data_dict['label'], dtype=torch.long).to(device)
                 with torch.no_grad():
+                    ## loss, test_acc, test_recall, test_precision, test_f1
                     val_acc, val_recall, val_precision, val_f1, val_loss = test_step(model, input_tokens, att_mask, y_hat)
                     val_acc_list.append(val_acc.item())
                     val_loss_list.append(val_loss.item())
@@ -470,8 +471,8 @@ def train(args):
                     num_iters += 1
                     pbar.update(1)
 
-                    log_var = 8000
-                    if (num_iters + 1) % log_var == 0:
+                    log_var = int(args.iterations / 12)
+                    if num_iters % log_var == 0:
                         logging.info("test set")
                         logging.info("validation set")
                         val_acc, val_loss, val_prec, val_recall, val_f1 = val_step(val_loader)

@@ -8,7 +8,7 @@
 """
 from latent_classifier import AdaVAEforLatentClassification
 import datetime, os, copy, math, time, collections, argparse, nltk, json, sys
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, confusion_matrix
 sys.path.append('../')
 import numpy as np
 from tqdm import tqdm
@@ -207,7 +207,7 @@ def train_step(device, model, optimizer, input_tokens, att_mask, labels):
 
     return loss, acc
 
-def test_step(model, input_tokens, att_mask, y_hat):
+def test_step(model, input_tokens, att_mask, y_hat, mcc=False):
     loss, representations, logits = model(input_ids=input_tokens, labels=y_hat, attention_mask=att_mask)
     a, y = torch.max(logits, dim=1)
     ## y_true, y_pred
@@ -215,7 +215,17 @@ def test_step(model, input_tokens, att_mask, y_hat):
     test_recall = recall_score(y_hat.cpu(), y.cpu(), average='macro')
     test_precision = precision_score(y_hat.cpu(), y.cpu(), average='macro')
     test_f1 = f1_score(y_hat.cpu(), y.cpu(), average='macro')
-    return test_acc, test_recall, test_precision, test_f1, loss
+
+    if mcc:
+        tn, fp, fn, tp = confusion_matrix(y_hat.cpu().numpy(), y.cpu().numpy()).ravel()
+        # tn, fp, fn, tp = tn.item(), fp.item(), fn.item(), tp.item()
+        fz = tp * tn - fp * fn
+        fm = (tp + fn) * (tp + fp) * (tn + fp) * (tn + fn)
+        test_MCC = fz / pow(fm, 0.5)
+    else:
+        test_MCC = 0.
+
+    return test_acc, test_recall, test_precision, test_f1, test_MCC, loss
 
 def train(args):
     now = datetime.datetime.now()
@@ -272,12 +282,18 @@ def train(args):
     init_para_frompretrained(model.encoder, gpt2_model.transformer, share_para=True)
 
     if args.load:
+        if args.dataset == "yelp":
+            load_folder = "/data/tuhq/PTMs/bert_adapter/src/out/yelp_polarity_iter10000_as128_scalar1.0_cycle-auto_prenc-start_wsTrue_lg-averaged_attn_add_attn_beta1.0_reg-kld_attn_mode-none_ffn_option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-32_optFalse_zrate-0.25_fb-1sd-42_3.12"
+        else:
+            experiment = args.experiment
+            load_folder = args.load_dir
         ## load ckpt
         print('Loading model weights...')
-        experiment = args.experiment
-        load_folder = os.path.join(args.load_dir, experiment)
-        state = torch.load(os.path.join(load_folder, 'model_latest.pt'),
-                           map_location=device)  # , map_location='cpu' model_latest.pt
+        if args.dataset == "cola":
+            state = torch.load("/data/tuhq/PTMs/bert_adapter/low_nlu/train_out/cola_iter100000_ft-False_as-512_feature-False_ppl-1.0_3.23/model_best_val.pt", map_location=device)
+        else:
+            state = torch.load(os.path.join(load_folder, 'model_latest.pt'),
+                               map_location=device)  # , map_location='cpu' model_latest.pt
         if 'module' in list(state.keys())[0]:  # model_path is data parallel model with attr 'module'
             state_copy = copy.copy(state)
             keys = state_copy.keys()
@@ -291,8 +307,8 @@ def train(args):
             model.load_state_dict(model_dict)  ## only loads adapters and latent connectors from ckpt
         else:
             model.load_state_dict(state)
-
-    final_folder = f"{args.dataset}_iter{args.iterations}_ft-{args.finetune_enc}_as-{args.adapter_size}_feature-{args.feature_based}_ppl-{args.percentage_per_label}_{date}"
+    load = True if args.load else False
+    final_folder = f"{args.dataset}_iter{args.iterations}_ft-{args.finetune_enc}_as-{args.adapter_size}_ls-{args.latent_size}_feature-{args.feature_based}_spl-{args.sample_per_label}_ppl-{args.percentage_per_label}_load{load}_{date}"
 
     save_folder = os.path.join(args.out_dir, final_folder)
     os.makedirs(save_folder, exist_ok=True)
@@ -370,19 +386,20 @@ def train(args):
         model.eval()
         val_acc_list = []
         val_loss_list = []
-        val_prec_list, val_recall_list, val_f1_list = [], [], []
+        val_prec_list, val_recall_list, val_f1_list, val_mcc_list = [], [], [], []
         with tqdm(total=min(len(data_loader), max_val_batches), desc="Evaluating Model") as pbar:
             for i, val_data_dict in enumerate(val_loader):
                 input_tokens, att_mask = tokenize(val_data_dict, tokenizer, device, args.max_length)
                 y_hat = torch.as_tensor(val_data_dict['label'], dtype=torch.long).to(device)
                 with torch.no_grad():
                     ## loss, test_acc, test_recall, test_precision, test_f1
-                    val_acc, val_recall, val_precision, val_f1, val_loss = test_step(model, input_tokens, att_mask, y_hat)
+                    val_acc, val_recall, val_precision, val_f1, val_mcc, val_loss = test_step(model, input_tokens, att_mask, y_hat)
                     val_acc_list.append(val_acc.item())
                     val_loss_list.append(val_loss.item())
                     val_prec_list.append(val_precision.item())
                     val_recall_list.append(val_recall.item())
                     val_f1_list.append(val_f1.item())
+                    val_mcc_list.append(val_mcc)
                 if i > max_val_batches:
                     break
                 pbar.update(1)
@@ -391,22 +408,25 @@ def train(args):
         val_prec = np.mean(val_prec_list)
         val_recall = np.mean(val_recall_list)
         val_f1 = np.mean(val_f1_list)
+        val_mcc = np.mean(val_mcc_list)
 
         # with open(os.path.join(save_folder, "valid.txt"), "a") as f:
         #     f.write("iter{}\tloss: {:.4f}\tacc: {:.4f}\n".format(num_iters, val_loss, val_acc))
-        v_writer.add_scalar('val_loss', val_loss, num_iters)
-        v_writer.add_scalar('val_acc', val_acc, num_iters)
-        v_writer.add_scalar('val_precision', val_prec, num_iters)
-        v_writer.add_scalar('val_recall', val_recall, num_iters)
-        v_writer.add_scalar('val_f1', val_f1, num_iters)
+        if args.do_train:
+            v_writer.add_scalar('val_loss', val_loss, num_iters)
+            v_writer.add_scalar('val_acc', val_acc, num_iters)
+            v_writer.add_scalar('val_precision', val_prec, num_iters)
+            v_writer.add_scalar('val_recall', val_recall, num_iters)
+            v_writer.add_scalar('val_f1', val_f1, num_iters)
         logging.info('val loss      : %.4f' % val_loss)
         logging.info('val acc       : %.4f' % val_acc)
         logging.info('val precision : %.4f' % val_prec)
         logging.info('val recall    : %.4f' % val_recall)
         logging.info('val f1        : %.4f' % val_f1)
+        logging.info('val mcc       : %.4f' % val_mcc)
         model.train()
 
-        return val_acc, val_loss, val_prec, val_recall, val_f1
+        return val_acc, val_loss, val_prec, val_recall, val_f1, val_mcc
 
 
     if args.do_train:
@@ -432,7 +452,7 @@ def train(args):
         num_iters = 0
         optimizer.zero_grad()
 
-        best_acc, best_loss, best_prec, best_recall, best_f1 = 0., 0., 0., 0., 0.
+        best_acc, best_loss, best_prec, best_recall, best_f1, best_mcc = 0., 0., 0., 0., 0., 0.
         while num_iters < args.iterations:
             # Run epoch
             st = time.time()
@@ -471,17 +491,18 @@ def train(args):
                     num_iters += 1
                     pbar.update(1)
 
-                    log_var = int(args.iterations / 12)
+                    log_var = int(args.iterations / 25)
                     if num_iters % log_var == 0:
                         logging.info("test set")
                         logging.info("validation set")
-                        val_acc, val_loss, val_prec, val_recall, val_f1 = val_step(val_loader)
+                        val_acc, val_loss, val_prec, val_recall, val_f1, val_mcc = val_step(val_loader)
                         if val_acc > best_acc:
                             best_acc = val_acc
                             best_loss = val_loss
                             best_prec = val_prec
                             best_recall = val_recall
                             best_f1 = val_f1
+                            best_mcc = val_mcc
                             print('Saving model...')
                             logging.info("Iteration completed: %d, remained %d" % (num_iters, args.iterations - num_iters))
                             logging.info("Saving model...")
@@ -513,11 +534,18 @@ def train(args):
         logging.info('best precision : %.4f' % best_prec)
         logging.info('best recall    : %.4f' % best_recall)
         logging.info('best f1        : %.4f' % best_f1)
+        logging.info('best mcc       : %.4f' % best_mcc)
         logging.info('Training complete.')
     else:
-        _ = val_step(val_loader)
+        val_acc, val_loss, val_prec, val_recall, val_f1, val_mcc = val_step(val_loader)
+        logging.info('test loss      : %.4f' % val_loss)
+        logging.info('test acc       : %.4f' % val_acc)
+        logging.info('test precision : %.4f' % val_prec)
+        logging.info('test recall    : %.4f' % val_recall)
+        logging.info('test f1        : %.4f' % val_f1)
+        logging.info('test mcc       : %.4f' % val_mcc)
 
 if __name__=="__main__":
     args = parser.parse_args()
-    # args = parser.parse_args('--batch_sizes 10 --do_train --max_length 32 --dataset yelp --iterations 20 --adapter_size 128 --latent_size 32'.split())
+    # args = parser.parse_args('--batch_sizes 100 --do_train --max_length 50 --dataset yelp --iterations 200 --adapter_size 128 --percentage_per_label 1.0 --sample_per_label 50 --latent_size 768'.split())
     train(args)

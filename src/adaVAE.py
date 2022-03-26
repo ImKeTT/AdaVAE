@@ -16,7 +16,7 @@ import torch.nn.functional as F
 from adapters.vae import *
 from utils import *
 from adapters.common import AdapterConfig
-from data import ConditionalGenerationDataset, GenerationDataset
+from data import ConditionalGenerationDataset, GenerationDataset, GLUEPretrainingDataset
 import datetime
 
 from torch.utils.data import Dataset, DataLoader
@@ -40,7 +40,7 @@ parser.add_argument("--seed", type=int, default=42)
 parser.add_argument('--model_type', type=str, default='cvae', choices=['cvae', 'vqvae', 'daae'])
 parser.add_argument('--iterations', type=int, default=2000 * 3)
 parser.add_argument('--dataset', type=str, default='yelp_data', choices=['yelp_data', 'yahoo_data', 'snli_data',
-                                                                         'penn_data', 'yelp_polarity', 'imdb_polarity'],
+                                                                         'penn_data', 'yelp_polarity', 'imdb_polarity', 'sst-2', 'cola'],
                     help="Dataset to use for training")
 parser.add_argument('--warmup', type=int, default=1000,
                     help="Amount of iterations to warmup, then decay. (-1 for no warmup and decay)")
@@ -465,30 +465,42 @@ def train(args):
     cur_b_schedule = len(batch_schedule) - 1 if args.switch_time == 0 else 0
     logging.info('Batch schedule')
     logging.info(batch_schedule)
-    if args.dataset in ['yelp_polarity', 'imdb_polarity']:
-        prefix_path = "../data"
-        GDataset = ConditionalGenerationDataset
+
+    if args.dataset in ['sst-2', 'cola']:
+        prefix_path = "../low_nlu/glue_data"
+        GDataset = GLUEPretrainingDataset
+        train_set = GDataset.from_file(os.path.join(prefix_path, args.dataset.upper(), "train.tsv"), args.dataset)
+        test_set = GDataset.from_file(os.path.join(prefix_path, args.dataset.upper(), "dev.tsv"), args.dataset)
+        val_set = GDataset.from_file(os.path.join(prefix_path, args.dataset.upper(), "dev.tsv"), args.dataset)
     else:
-        prefix_path = "../data/optimus_dataset"
-        if args.dataset in ['yelp_data']:
+        if args.dataset in ['yelp_polarity', 'imdb_polarity']:
+            prefix_path = "../data"
             GDataset = ConditionalGenerationDataset
         else:
-            GDataset = GenerationDataset
+            prefix_path = "../data/optimus_dataset"
+            if args.dataset in ['yelp_data']:
+                GDataset = ConditionalGenerationDataset
+            else:
+                GDataset = GenerationDataset
+        train_set = GDataset.from_file(os.path.join(prefix_path, args.dataset, "train.txt"))
+        test_set = GDataset.from_file(os.path.join(prefix_path, args.dataset, "test.txt"))
+        val_set = GDataset.from_file(os.path.join(prefix_path, args.dataset, "valid.txt"))
+
     train_loader = DataLoader(
-        GDataset.from_file(os.path.join(prefix_path, args.dataset, "train.txt")),
+        train_set,
         batch_size=batch_schedule[cur_b_schedule][0],
         pin_memory=True,
         drop_last=True,
         num_workers=args.workers)
     test_bs = 10 if args.weighted_sample else batch_schedule[-1][0]
     test_loader = DataLoader(
-        GDataset.from_file(os.path.join(prefix_path, args.dataset, "test.txt")),
+        test_set,
         batch_size=test_bs,
         pin_memory=True,
         drop_last=True,
         num_workers=args.workers)
     val_loader = DataLoader(
-        GDataset.from_file(os.path.join(prefix_path, args.dataset, "valid.txt")),
+        val_set,
         batch_size=test_bs,
         pin_memory=True,
         drop_last=True,

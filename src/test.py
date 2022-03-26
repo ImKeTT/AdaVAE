@@ -23,7 +23,7 @@ from torch.utils.data import Dataset, DataLoader
 from transformers.modeling_utils import PreTrainedModel, Conv1D, prune_conv1d_layer, SequenceSummary
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, AdamW, get_linear_schedule_with_warmup, Conv1D
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 parser = argparse.ArgumentParser()
 
 # Default parameters are set based on single GPU training
@@ -77,7 +77,7 @@ parser.add_argument('--workers', default=2, type=int, metavar='N',  help='number
 parser.add_argument("--total_sents", default=10, type=int, help="Total sentences to test recontruction/generation.")
 parser.add_argument("--max_test_batch", default=10, type=int, help="Total sentence pairs to test interpolation/analogy.")
 parser.add_argument("--num_interpolation_step", default=10, type=int)
-parser.add_argument("--degree_to_target", type=float, default="1.0")
+parser.add_argument("--degree_to_target", type=float, default=1.0)
 parser.add_argument("--max_val_batches", type=int, help="Max batch size number to test recontruction.", default=30)
 parser.add_argument("--latest_date", type=str, help="Latest date for model testing.", default="2.26")
 
@@ -192,7 +192,7 @@ def cal_interpolate(args, ada_config, model, tokenizer, device, eval_dataloader,
 
 
 
-def interpolate(args, ada_config, model, tokenizer, device, batch_pair, num_interpolation_steps=10, top_k=100, top_p=0.5):
+def interpolate(args, ada_config, model, tokenizer, device, batch_pair, f, num_interpolation_steps=10, top_k=100, top_p=0.5):
     endoftext = tokenizer.convert_tokens_to_ids("<|endoftext|>")
     with torch.no_grad():
         x_ids, input_ids, attention_mask = tokenize(batch_pair['x'][0], tokenizer, device, args)
@@ -206,7 +206,7 @@ def interpolate(args, ada_config, model, tokenizer, device, batch_pair, num_inte
     num_steps = num_interpolation_steps + 1
     for step in range(num_steps + 1):
         latent_z = latent_z1 + (latent_z2 - latent_z1) * step * 1.0 / num_steps
-        sents, _ = sample_sequence(model, args.max_length, latent_z.long().to(device),
+        sents, _ = sample_sequence(model, args.max_length, latent_z.to(device),
                                        batch_size=1, top_k=top_k, top_p=top_p,
                                        device=device, sample=True, eos_token=endoftext)
         # Sample sentences
@@ -222,11 +222,11 @@ def interpolate(args, ada_config, model, tokenizer, device, batch_pair, num_inte
 
         sent = tokenizer.decode(sent).strip()
         result[step] = sent
-        print(sent)
+        f.write(sent + '\n')
 
     return result
 
-def analogy(args, ada_config, model, tokenizer, device, batch_triple, top_k=100, top_p=0.5):
+def analogy(args, ada_config, model, tokenizer, device, batch_triple, f, top_k=100, top_p=0.5):
     endoftext = tokenizer.convert_tokens_to_ids("<|endoftext|>")
     with torch.no_grad():
         x_ids, input_ids, attention_mask = tokenize(batch_triple['x'][0], tokenizer, device, args)
@@ -237,30 +237,31 @@ def analogy(args, ada_config, model, tokenizer, device, batch_triple, top_k=100,
         outputs = model(input_ids=input_ids, attention_mask=attention_mask, from_mean=True)
         latent_z2 = outputs[-2]
 
-        x_ids, input_ids, attention_mask = tokenize(batch_triple['x'][2], tokenizer, device, args)
-        outputs = model(input_ids=input_ids, attention_mask=attention_mask, from_mean=True)
-        latent_z3 = outputs[-2]
+        for i in range(2, len(batch_triple['x'])):
+            x_ids, input_ids, attention_mask = tokenize(batch_triple['x'][i], tokenizer, device, args)
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask, from_mean=True)
+            latent_z3 = outputs[-2]
 
-    result = defaultdict(str)
-    latent_z = latent_z3 + args.degree_to_target * (latent_z2 - latent_z1)
-    sents, _ = sample_sequence(model, args.max_length, latent_z.long().to(device),
-                               batch_size=1, top_k=top_k, top_p=top_p,
-                               device=device, sample=True, eos_token=endoftext)
-    # Sample sentences
-    sents = sents.tolist()
-    ## bsz == 1 only sample 1 sentence for each interpolation step
-    sent = sents[0]
-    sent = sent[sent.index(endoftext) + 1:]
+            result = defaultdict(str)
+            latent_z = latent_z3 + args.degree_to_target * (latent_z2 - latent_z1)
+            sents, _ = sample_sequence(model, args.max_length, latent_z.to(device),
+                                       batch_size=1, top_k=top_k, top_p=top_p,
+                                       device=device, sample=True, eos_token=endoftext)
+            # Sample sentences
+            sents = sents.tolist()
+            ## bsz == 1 only sample 1 sentence for each interpolation step
+            sent = sents[0]
+            sent = sent[sent.index(endoftext) + 1:]
 
-    if endoftext in sent:
-        idx = sent.index(endoftext)
-        sent = sent[:idx]
+            if endoftext in sent:
+                idx = sent.index(endoftext)
+                sent = sent[:idx]
 
-    sent = tokenizer.decode(sent).strip()
-    result[0] = sent
-    print(sent)
+            sent = tokenizer.decode(sent).strip()
+            result[0] = sent
+            f.write(sent + '\n')
 
-    return result
+    # return result
 
 def cal_rec(args, ada_config, model, tokenizer, device, eval_dataloader, save_dir=None, sample=False, top_k=100, top_p=0.95):
     endoftext = tokenizer.convert_tokens_to_ids("<|endoftext|>")
@@ -673,8 +674,178 @@ def test(args):
             elif mode == "cal_interpolate":
                 pass
 
+def test_short(args):
+    if not torch.cuda.is_available(): args.no_gpu = True
+    gpu = not args.no_gpu
+    if gpu:
+        print("There are ", torch.cuda.device_count(), " available GPUs!")
+        torch.cuda.set_device(args.gpu)
+        print('Current single GPU: {}'.format(torch.cuda.current_device()))
+    device = torch.device(args.gpu if gpu else "cpu")
+    tokenizer = GPT2Tokenizer.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
+    gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
+    tokenizer.pad_token = tokenizer.eos_token
+    # randomness
+    np.random.seed(args.seed)
+    prng = np.random.RandomState()
+    torch.random.manual_seed(args.seed)
+    if gpu:
+        torch.cuda.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
+    config = GPT2Config()
+    ada_config = AdapterConfig(hidden_size=768,
+                               adapter_size=args.adapter_size,
+                               adapter_act='relu',
+                               adapter_initializer_range=1e-2,
+                               latent_size=args.latent_size,
+                               class_num=args.class_num,
+                               encoder_n_layer=args.encoder_n_layer,
+                               decoder_n_layer=args.decoder_n_layer,
+                               dis_emb=128,  # hidden dimension for adversarial KLD discriminator
+                               init='other',
+                               adapter_scalar=args.adapter_scalar,
+                               ffn_option=args.ffn_option,
+                               attn_mode=args.attn_mode,
+                               latent_gen=args.latent_gen,
+                               attn_option='none',
+                               mid_dim=30,
+                               attn_bn=25,
+                               prefix_dropout=0.1,
+                               tune_enc=False,
+                               tune_dec=False)
+    AdaVAE = AdaVAEModel(config, ada_config, add_input=args.add_input, add_attn=args.add_attn, add_softmax=args.add_softmax, add_mem=args.add_mem,
+                   attn_proj_vary=args.attn_proj_vary, learn_prior=args.learn_prior, reg_loss=args.reg_loss)
+    ## load pre-trained weights
+    init_para_frompretrained(AdaVAE.transformer, gpt2_model.transformer, share_para=False)
+    init_para_frompretrained(AdaVAE.encoder, gpt2_model.transformer, share_para=False)
+    AdaVAE.lm_head.weight = gpt2_model.lm_head.weight
+
+    AdaVAE.eval()
+    ## load ckpt
+    prefix = "/data/tuhq/PTMs/bert_adapter/src/out"
+    # save_folder = os.path.join(prefix, "snli_data_iter15000_as128_scalar1.0_cycle-auto_prenc-start_wsTrue_lg-averaged_attn_add_attn_beta1.0_reg-kld_attn_mode-none_ffn_option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-768_optFalse_ftFalse_zrate-0.1_fb-1sd-42_3.25")
+    save_folder = os.path.join(prefix,
+                               "yelp_polarity_iter15000_as128_scalar1.0_cycle-auto_prenc-start_wsTrue_lg-averaged_attn_add_attn_beta1.0_reg-kld_attn_mode-none_ffn_option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-768_optFalse_ftFalse_zrate-0.1_fb-1sd-42_3.25")
+    print('Loading model weights...')
+    state = torch.load(os.path.join(save_folder, 'model_best_val.pt'))  # , map_location='cpu' model_latest.pt
+    if 'module' in list(state.keys())[0]:  # model_path is data parallel model with attr 'module'
+        state_copy = copy.copy(state)
+        keys = state_copy.keys()
+        for k in keys:
+            state[k.replace('module.', '')] = state.pop(k)
+    ## load trained parameters
+    if not args.save_all:
+        model_dict = AdaVAE.state_dict()
+        additional_dict = {k: v for k, v in state.items() if k in model_dict}
+        model_dict.update(additional_dict)
+        AdaVAE.load_state_dict(model_dict)
+    else:
+        AdaVAE.load_state_dict(state)
+    AdaVAE = AdaVAE.to(device)
+    mode = args.mode
+    analogy_triplet1 = {'x': ['<endoftext> a girl makes a silly face <endoftext>', '<endoftext> two soccer players are playing soccer <endoftext>',
+                             '<endoftext> a girl poses for a picture <endoftext>', '<endoftext> a girl in a blue shirt is taking pictures of a microscope <endoftext>',
+                             '<endoftext> a woman with a red scarf looks at the stars <endoftext>', '<endoftext> a boy is taking a bath <endoftext>',
+                             '<endoftext> a little boy is eating a bowl of soup <endoftext>']}
+
+    analogy_triplet2 = {'x': ['<endoftext> two soccer players are playing soccer <endoftext>',
+                             '<endoftext> the people are building a machine <endoftext>',
+                             '<endoftext> people walking in the street <endoftext>',
+                             '<endoftext> the man was waiting for his wife to come home <endoftext>',
+                             '<endoftext> two women preparing food for a table <endoftext>',
+                             '<endoftext> two dogs chase each other through the water <endoftext>',
+                             '<endoftext> a person sitting in a library reading <endoftext>']}
+
+    analogy_triplet3 = {'x': ['<endoftext> people are walking near a road. <endoftext>',
+                              '<endoftext> a girl is riding a small white horse in a park with a large group of people <endoftext>',
+                              '<endoftext> some people are holding cameras <endoftext>',
+                              '<endoftext> people are attending church <endoftext>',
+                              '<endoftext> people eat at a restaurant. <endoftext>',
+                              '<endoftext> the dancers are asleep <endoftext>',
+                              '<endoftext> two dogs are reunited <endoftext>',
+                              '<endoftext> a person is fishing for water. <endoftext>',
+                              '<endoftext> a mother and daughter laugh as they walk home <endoftext>',
+                              '<endoftext> a female gymnast is performing for a crowd <endoftext>',
+                              '<endoftext> a small dog is in water <endoftext>']}
+
+    analogy_triplet4 = {'x': ['<endoftext> it is a very nice place to call home !  <endoftext>',
+                              '<endoftext> the food is so good and i seriously always feel like family .  <endoftext>',
+                              '<endoftext> food was good , served in large portions .  <endoftext>',
+                              '<endoftext> great experience every time at prestige animal clinic !  <endoftext>',
+                              '<endoftext> i was very disappointed with the quality and service .  <endoftext>',
+                              '<endoftext> i found the perfect gift for a friend of mine .  <endoftext>',
+                              '<endoftext> i ordered the tuna salad which was better than expected .  <endoftext>']}
+
+    analogy_triplet5 = {'x': ['<endoftext> the whole place looks like a cheap apartment complex . <endoftext>',
+                              '<endoftext> the place is very out dated and the plumbing here is awful . <endoftext>',
+                              '<endoftext> love tea time here !  <endoftext>',
+                              '<endoftext> atmosphere is really nice . <endoftext>',
+                              '<endoftext> the service was bad .  <endoftext>',
+                              '<endoftext> salsa is the best !  <endoftext>',
+                              '<endoftext> one of the best kept secrets for small private schools in north central phoenix ! <endoftext>']}
+
+    analogy_triplet6 = {'x': ['<endoftext> great restaurant with good food and a nice variety . <endoftext>',
+                              '<endoftext> it keeps getting worse !  <endoftext>',
+                              '<endoftext> i was impressed . <endoftext>',
+                              '<endoftext> i highly recommend this company . <endoftext>',
+                              '<endoftext> i would go back but with a good coupon . <endoftext>',
+                              '<endoftext> i left the office feeling pissed . <endoftext>',
+                              '<endoftext> i could just tell that he genuinely loves working with guitars . <endoftext>',
+                              '<endoftext> i love the food this place serves .  <endoftext>',
+                              '<endoftext> good service , and nice seating . <endoftext>',
+                              '<endoftext> actually went there two days in a row i love the place so much . <endoftext>',
+                              '<endoftext> this place is clean , professional and convenient . <endoftext>']}
+
+    batch_pair1 = {'x': ['<endoftext> children are looking for the water to be clear. <endoftext>',
+                         '<endoftext> there are two people playing soccer. <endoftext>']}
+    batch_pair2 = {'x': ['<endoftext> the little girl plays with the toys. <endoftext>',
+                         '<endoftext> there are children watching a train. <endoftext>']}
+    batch_pair3 = {'x': ['<endoftext> people are walking near a road. <endoftext>',
+                         '<endoftext> there is a man sitting on the side of a boat and the woman is sitting on the side of a boat. <endoftext>']}
+
+    batch_pair4 = {'x': ['<endoftext> unfortunately i live right by this one .  <endoftext>',
+                         '<endoftext> i especially enjoyed the spinach dip .  <endoftext>']}
+    batch_pair5 = {'x': ['<endoftext> the wife and i liked this place .  <endoftext>',
+                         '<endoftext> no credit courtesy at all .  <endoftext>']}
+    batch_pair6 = {'x': ['<endoftext> the location is clean and the patio is great !  <endoftext>',
+                         '<endoftext> very special place and highly recommended .  <endoftext>']}
+
+    topk = 10
+    topp = 0.0
+    with open(f"./output_txts/{args.mode}_k{topk}_p{topp}_yelp.txt", 'a') as f:
+        if args.mode == "interpolate":
+            f.write("-"*10 + "Interpolating" + "-"*10 + '\n')
+            interpolate(args, ada_config, AdaVAE, tokenizer, device, batch_pair1, f, num_interpolation_steps=10, top_k=topk, top_p=topp)
+            f.write("-" * 20 + '\n')
+            interpolate(args, ada_config, AdaVAE, tokenizer, device, batch_pair2, f, num_interpolation_steps=10, top_k=topk, top_p=topp)
+            f.write("-" * 20 + '\n')
+            interpolate(args, ada_config, AdaVAE, tokenizer, device, batch_pair3, f, num_interpolation_steps=10, top_k=topk, top_p=topp)
+
+            f.write("-" * 20 + '\n')
+            interpolate(args, ada_config, AdaVAE, tokenizer, device, batch_pair4, f, num_interpolation_steps=10,
+                        top_k=topk, top_p=topp)
+            f.write("-" * 20 + '\n')
+            interpolate(args, ada_config, AdaVAE, tokenizer, device, batch_pair5, f, num_interpolation_steps=10,
+                        top_k=topk, top_p=topp)
+            f.write("-" * 20 + '\n')
+            interpolate(args, ada_config, AdaVAE, tokenizer, device, batch_pair6, f, num_interpolation_steps=10,
+                        top_k=topk, top_p=topp)
+        elif args.mode == "analogy":
+            f.write("-" * 10 + "Analogying" + "-" * 10 + '\n')
+            analogy(args, ada_config, AdaVAE, tokenizer, device, analogy_triplet1, f, top_k=topk, top_p=topp)
+            f.write("-" * 20 + '\n')
+            analogy(args, ada_config, AdaVAE, tokenizer, device, analogy_triplet2, f, top_k=topk, top_p=topp)
+            f.write("-" * 20 + '\n')
+            analogy(args, ada_config, AdaVAE, tokenizer, device, analogy_triplet3, f, top_k=topk, top_p=topp)
+
+            f.write("-" * 20 + '\n')
+            analogy(args, ada_config, AdaVAE, tokenizer, device, analogy_triplet4, f, top_k=topk, top_p=topp)
+            f.write("-" * 20 + '\n')
+            analogy(args, ada_config, AdaVAE, tokenizer, device, analogy_triplet5, f, top_k=topk, top_p=topp)
+            f.write("-" * 20 + '\n')
+            analogy(args, ada_config, AdaVAE, tokenizer, device, analogy_triplet6, f, top_k=topk, top_p=topp)
+
 if __name__=="__main__":
-    # args = parser.parse_args()
-    args = parser.parse_args('--mode overall --weighted_sample --out-dir out --add_attn --total_sents 5000 '
-                             '--max_length 50 --batch_size 10'.split())
-    test(args)
+    args = parser.parse_args()
+    # args = parser.parse_args('--mode interpolate --no_gpu --weighted_sample --add_attn --latent_size 768 --max_length 50 --batch_size 10'.split())
+    test_short(args)

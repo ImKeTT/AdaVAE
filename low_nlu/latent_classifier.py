@@ -41,7 +41,13 @@ class AdaVAEforLatentClassification(nn.Module):
                 head_mask=None,
                 inputs_embeds=None,):
 
-        mean, _, _, representations = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
+        mean, _, _, representations = self.encoder(input_ids=input_ids,
+                                                   past=past,
+                                                   attention_mask=attention_mask,
+                                                   token_type_ids=token_type_ids,
+                                                   position_ids=position_ids,
+                                                   head_mask=head_mask,
+                                                   inputs_embeds=inputs_embeds)
         if self.use_mean:
             representations = mean
         representations = self.dropout(representations)

@@ -259,42 +259,10 @@ def train(args):
         print('Current single GPU: {}'.format(torch.cuda.current_device()))
     device = torch.device(args.gpu if gpu else "cpu")
 
-    # randomness
     np.random.seed(args.seed)
     prng = np.random.RandomState()
     torch.random.manual_seed(args.seed)
     if gpu: torch.cuda.manual_seed(args.seed); torch.cuda.manual_seed_all(args.seed)
-
-    config = GPT2Config()
-    tokenizer = GPT2Tokenizer.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
-    tokenizer.pad_token = tokenizer.eos_token
-    gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
-    ada_config = AdapterConfig(hidden_size=768,
-                               adapter_size=args.adapter_size,
-                               adapter_act='relu',
-                               adapter_initializer_range=1e-2,
-                               latent_size=args.latent_size,
-                               class_num=args.label_size,
-                               encoder_n_layer=args.encoder_n_layer,
-                               decoder_n_layer=args.decoder_n_layer,
-                               init='other',
-                               adapter_scalar=args.adapter_scalar,
-                               ffn_option=args.ffn_option,
-                               attn_mode=args.attn_mode,
-                               attn_option='none',
-                               mid_dim=30,
-                               attn_bn=25,
-                               prefix_dropout=0.1,
-                               tune_enc=args.finetune_enc,
-                               tune_dec=False,
-                               latent_gen=args.latent_gen,
-                               dis_emb=128)  ## two-stage training, should employ plain GPT-2 decoder/encoder + adapters
-
-    AdaVae_encoder = Encoder(config, ada_config)
-    # AdaVae_average_attn = AverageSelfAttention(config.n_embd, ada_config)
-    endoftext = tokenizer.convert_tokens_to_ids("<|endoftext|>")
-
-    model = AdaVAEforLatentClassification(args, config, AdaVae_encoder, use_mean=args.use_mean)
 
     overall_loss, overall_acc, overall_prec, overall_recall, overall_f1 = [], [], [], [], []
     for ith_run in range(args.valid_run):
@@ -305,6 +273,37 @@ def train(args):
         if gpu:
             torch.cuda.manual_seed(seed_i)
             torch.cuda.manual_seed_all(seed_i)
+
+        config = GPT2Config()
+        tokenizer = GPT2Tokenizer.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
+        tokenizer.pad_token = tokenizer.eos_token
+        gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
+        ada_config = AdapterConfig(hidden_size=768,
+                                   adapter_size=args.adapter_size,
+                                   adapter_act='relu',
+                                   adapter_initializer_range=1e-2,
+                                   latent_size=args.latent_size,
+                                   class_num=args.label_size,
+                                   encoder_n_layer=args.encoder_n_layer,
+                                   decoder_n_layer=args.decoder_n_layer,
+                                   init='other',
+                                   adapter_scalar=args.adapter_scalar,
+                                   ffn_option=args.ffn_option,
+                                   attn_mode=args.attn_mode,
+                                   attn_option='none',
+                                   mid_dim=30,
+                                   attn_bn=25,
+                                   prefix_dropout=0.1,
+                                   tune_enc=args.finetune_enc,
+                                   tune_dec=False,
+                                   latent_gen=args.latent_gen,
+                                   dis_emb=128)  ## two-stage training, should employ plain GPT-2 decoder/encoder + adapters
+
+        AdaVae_encoder = Encoder(config, ada_config)
+        # AdaVae_average_attn = AverageSelfAttention(config.n_embd, ada_config)
+        endoftext = tokenizer.convert_tokens_to_ids("<|endoftext|>")
+
+        model = AdaVAEforLatentClassification(args, config, AdaVae_encoder, use_mean=args.use_mean)
         ## load pre-trained weights
         init_para_frompretrained(model.encoder, gpt2_model.transformer, share_para=True)
 

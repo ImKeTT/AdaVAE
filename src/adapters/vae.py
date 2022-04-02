@@ -690,7 +690,9 @@ class Unmasked_AdapterBlock(Block):
             self.ln_cross_attn = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
         self.mlp = MLP(4 * nx, config)
         self.Adaconfig = AdapterConfig
-        self.adapter = GPT2Adapter(AdapterConfig)
+        self.adapter = GPT2Adapter(self.AdapterConfig)
+        if self.Adaconfig.ffn_option == "houlsby":
+            self.adapter_addition = GPT2Adapter(self.AdapterConfig)
 
     def forward(
             self, x, layer_past=None, attention_mask=None, head_mask=None, encoder_hidden_states=None,
@@ -737,8 +739,10 @@ class Unmasked_AdapterBlock(Block):
             x = x + a
         elif self.Adaconfig.ffn_option == "parallel_ffn":
             x = self.adapter(x)
-        elif self.Adaconfig.ffn_option == "sequential_ffn" or "houlsby":
+        elif self.Adaconfig.ffn_option == "sequential_ffn":
             m = self.adapter(m) ## a = a + adapter_change(a)
+        elif self.Adaconfig.ffn_option == "houlsby":
+            m = self.adapter_addition(m)
         x = x + m
         if self.Adaconfig.ffn_option == "pfeiffer":
             x = self.ln_3(self.adapter(x, adapter_res=False, residual=m, adapter_layernorm_option="in") + a)

@@ -32,7 +32,7 @@ from utils_glue import (compute_metrics, convert_examples_to_features,
 parser = argparse.ArgumentParser()
 
 # Default parameters are set based on single GPU training
-parser.add_argument('--lr', type=float, default=5e-5)
+parser.add_argument('--lr', type=float, default=1e-4)
 parser.add_argument("--seed", type=int, default=42)
 
 # parser.add_argument('--data_type', type=str, default='t1', choices=['t' + str(i) for i in range(9)], help="t: type")
@@ -522,7 +522,7 @@ def train(args):
                         num_iters += 1
                         pbar.update(1)
 
-                        log_var = int(args.iterations / 25)
+                        log_var = int(args.iterations / 30)
                         if num_iters % log_var == 0:
                             logging.info("test set")
                             logging.info("validation set")
@@ -539,14 +539,15 @@ def train(args):
                                 logging.info("Saving model...")
                                 logging.info('\n------------------------------------------------------')
 
-                                if args.save_all:
-                                    save_orderdict = model.state_dict()
-                                else:
-                                    save_orderdict = collections.OrderedDict()
-                                    for name, parameter in model.named_parameters():
-                                        if parameter.requires_grad:
-                                            save_orderdict[name] = parameter
-                                torch.save(save_orderdict, os.path.join(save_folder, 'model_best_val.pt'))
+                                if args.adapter_size != 0:
+                                    if args.save_all:
+                                        save_orderdict = model.state_dict()
+                                    else:
+                                        save_orderdict = collections.OrderedDict()
+                                        for name, parameter in model.named_parameters():
+                                            if parameter.requires_grad:
+                                                save_orderdict[name] = parameter
+                                    torch.save(save_orderdict, os.path.join(save_folder, 'model_best_val.pt'))
 
                 if not end:
                     e += 1

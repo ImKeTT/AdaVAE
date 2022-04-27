@@ -690,7 +690,7 @@ class Unmasked_AdapterBlock(Block):
             self.ln_cross_attn = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
         self.mlp = MLP(4 * nx, config)
         self.Adaconfig = AdapterConfig
-        self.adapter = GPT2Adapter(self.AdapterConfig)
+        self.adapter = GPT2Adapter(self.Adaconfig)
         if self.Adaconfig.ffn_option == "houlsby":
             self.adapter_addition = GPT2Adapter(self.AdapterConfig)
 

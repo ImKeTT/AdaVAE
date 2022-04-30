@@ -402,13 +402,15 @@ def train(args):
             batch_size=args.batch_sizes[0],
             pin_memory=True,
             drop_last=False,
-            num_workers=args.workers)
+            num_workers=args.workers,
+            shuffle=True)
         val_loader = DataLoader(
             DictDataset(processor.get_dev_examples(prefix_data_path)),
             batch_size=args.batch_sizes[0],
             pin_memory=True,
             drop_last=False,
-            num_workers=args.workers)
+            num_workers=args.workers,
+            shuffle=True)
         logging.info('Done.')
 
         def val_step(data_loader):

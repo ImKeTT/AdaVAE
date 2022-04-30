@@ -491,20 +491,23 @@ def train(args):
         batch_size=batch_schedule[cur_b_schedule][0],
         pin_memory=True,
         drop_last=True,
-        num_workers=args.workers)
+        num_workers=args.workers,
+        shuffle=True)
     test_bs = 10 if args.weighted_sample else batch_schedule[-1][0]
     test_loader = DataLoader(
         test_set,
         batch_size=test_bs,
         pin_memory=True,
         drop_last=True,
-        num_workers=args.workers)
+        num_workers=args.workers,
+        shuffle=True)
     val_loader = DataLoader(
         val_set,
         batch_size=test_bs,
         pin_memory=True,
         drop_last=True,
-        num_workers=args.workers)
+        num_workers=args.workers,
+        shuffle=True)
     logging.info('Done.')
 
     logging.info('Wrapping models and optimizers...')

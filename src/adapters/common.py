@@ -28,6 +28,7 @@ class AdapterConfig(NamedTuple):
     prefix_dropout: float
     tune_enc: bool
     tune_dec: bool
+    add_z2adapters: bool ## wether infuse z to adapter blocks
 
 
 def freeze_all_parameters(model: nn.Module) -> nn.Module:

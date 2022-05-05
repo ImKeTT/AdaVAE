@@ -72,7 +72,7 @@ parser.add_argument('--ffn_option', type=str, default="parallel_ffn",
 parser.add_argument('--latent_gen', type=str, default="averaged_attn",
                     help="method for encoder to latent space, averaged_attn for average attention from "
                          "TransformerCVAE, linear for taken the first encoder token to a linear like Optimus",
-                    choices=['averaged_attn', 'linear'])
+                    choices=['averaged_attn', 'linear', 'mean_max_linear'])
 parser.add_argument('--attn_mode', type=str, default="prefix",
                     choices=['prefix', 'adapter', 'lora', 'none'],
                     help="attention transfer type")
@@ -133,6 +133,7 @@ parser.add_argument('--add_softmax', action="store_true")
 parser.add_argument('--add_mem', action="store_true")
 parser.add_argument('--attn_proj_vary', action="store_true")
 parser.add_argument('--learn_prior', action="store_true")
+parser.add_argument('--add_z2adapters', action="store_true")
 parser.add_argument('--finetune_enc', help="whether to fine-tune encoder, if True, no adapter added in encoder",
                     action="store_true")
 parser.add_argument('--finetune_dec', help="whether to fine-tune decoder, if True, no adapter added in decoder",
@@ -378,7 +379,8 @@ def train(args):
                                attn_bn=25,
                                prefix_dropout=0.1,
                                tune_enc=args.finetune_enc,
-                               tune_dec=args.finetune_dec)
+                               tune_dec=args.finetune_dec,
+                               add_z2adapters=args.add_z2adapters)
     # assert ada_config.ffn_option in ['sequential', 'parallel_attn', 'parallel_ffn',
     #                                  'pfeiffer'], 'expect proper ffn_option'
 

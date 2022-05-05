@@ -68,6 +68,47 @@ class AverageSelfAttention(nn.Module):
 
         return representations, scores
 
+class LatentSelfAttention(nn.Module):
+    def __init__(self, attention_size, AdapterConfig):
+        super(LatentSelfAttention, self).__init__()
+        self.linear_trans = nn.Linear(attention_size, attention_size, bias=False)
+        self.softmax = nn.Softmax(dim=-1)
+        if isinstance(AdapterConfig.adapter_act, str):
+            self.activation = ACT2FN[AdapterConfig.adapter_act]
+        else:
+            self.activation = AdapterConfig.adapter_act
+
+    def forward(self, inputs, attention_mask=None):
+
+        ##################################################################
+        # STEP 1 - perform dot product
+        # of the attention vector and each hidden state
+        ##################################################################
+
+        # inputs is a 3D Tensor: batch, len, hidden_size
+        # scores is a 2D Tensor: batch, len
+        scores = self.activation(self.linear_trans(inputs))
+
+        ##################################################################
+        # Step 2 - Masking
+        ##################################################################
+
+        if attention_mask is not None:
+            scores = scores + attention_mask
+
+        ##################################################################
+        # Step 3 - Weighted sum of hidden states, by the attention scores
+        ##################################################################
+        scores = self.softmax(scores)
+
+        # multiply each hidden state with the attention weights
+        weighted = torch.mul(inputs, scores.unsqueeze(-1).expand_as(inputs))
+
+        # sum the hidden states
+        representations = weighted.sum(1).squeeze(1)
+
+        return representations, scores
+
 
 # Pseudo self-attention
 ## PSA for additive z infusion
@@ -354,7 +395,9 @@ class GPT2Adapter(nn.Module):
             self.activation = AdapterConfig.adapter_act
 
 
-    def forward(self, hidden_states: torch.Tensor, adapter_res:bool=True, residual: torch.Tensor=None, adapter_layernorm_option:str=None):
+    def forward(self, hidden_states: torch.Tensor, adapter_res:bool=True, residual: torch.Tensor=None,
+                adapter_layernorm_option:str=None, z_proj: torch.Tensor=None):
+
         if adapter_layernorm_option == "in" or adapter_layernorm_option == "out":
             self.adapter_layer_norm_before = nn.LayerNorm(hidden_states.size(-1))
         if adapter_layernorm_option == 'in':
@@ -366,6 +409,68 @@ class GPT2Adapter(nn.Module):
         up_projected *= self.scale
         if adapter_layernorm_option == 'out':
             up_projected = self.adapter_layer_norm_before(up_projected)
+        if residual is not None:
+            up_projected += residual
+        if adapter_res:
+            out = hidden_states + up_projected
+        else:
+            out = up_projected
+        return out
+
+## Conditional GPT2 Adapter, support parallel or sequential adapter (LoRA/Adapter)
+class Latent_GPT2Adapter(nn.Module):
+    """GPT2Adapter with label embedding infused during generation"""
+    def __init__(self, AdapterConfig: AdapterConfig):
+        super(Latent_GPT2Adapter, self).__init__()
+        self.down_project = nn.Linear(AdapterConfig.hidden_size, AdapterConfig.adapter_size)
+        self.up_project = nn.Linear(AdapterConfig.adapter_size, AdapterConfig.hidden_size)
+        # self.infuser = nn.Linear(AdapterConfig.label_emb_size+AdapterConfig.hidden_size, AdapterConfig.hidden_size)
+        ## initialize up_project weight and bias
+        ## initialize down_project weight and bias
+        if AdapterConfig.init == "bert":
+            self.apply(init_bert_weights)
+        elif AdapterConfig.init == "lisa":
+            self.apply(init_lisa_params)
+        elif AdapterConfig.init == "lora":
+            with torch.no_grad():
+                nn.init.kaiming_uniform_(self.down_project.weight, a=math.sqrt(5))
+                nn.init.zeros_(self.up_project.weight)
+                nn.init.zeros_(self.down_project.bias)
+                nn.init.zeros_(self.up_project.bias)
+        else:
+            nn.init.normal_(self.up_project.weight, std=AdapterConfig.adapter_initializer_range)
+            nn.init.zeros_(self.up_project.bias)
+            nn.init.normal_(self.down_project.weight, std=AdapterConfig.adapter_initializer_range)
+            nn.init.zeros_(self.down_project.bias)
+
+        if AdapterConfig.adapter_scalar=="learnable_scalar":
+            self.scale = nn.Parameter(torch.ones(1))
+        else:
+            self.scale = float(AdapterConfig.adapter_scalar)
+
+        if isinstance(AdapterConfig.adapter_act, str):
+            self.activation = ACT2FN[AdapterConfig.adapter_act]
+        else:
+            self.activation = AdapterConfig.adapter_act
+
+
+    def forward(self, hidden_states: torch.Tensor,  adapter_res:bool=True,
+                residual: torch.Tensor=None, adapter_layernorm_option:str=None, z_proj: torch.Tensor=None):
+
+        if adapter_layernorm_option == "in" or adapter_layernorm_option == "out":
+            self.adapter_layer_norm_before = nn.LayerNorm(hidden_states.size(-1))
+        if adapter_layernorm_option == 'in':
+            hidden_states = self.adapter_layer_norm_before(hidden_states)
+        ## essentially a ''down mapping'' and an ''up mapping'' process
+        down_projected = self.down_project(hidden_states)
+        infused_projected = down_projected + z_proj
+        activated = self.activation(infused_projected)
+        up_projected = self.up_project(activated)
+        up_projected *= self.scale
+
+        if adapter_layernorm_option == 'out':
+            up_projected = self.adapter_layer_norm_before(up_projected)
+
         if residual is not None:
             up_projected += residual
         if adapter_res:
@@ -759,6 +864,7 @@ class AdapterBlock(Block):
     def __init__(self, n_ctx, config, AdapterConfig, add_attn=True, add_mem=False, scale=False):
         super(Block, self).__init__()
         nx = config.n_embd
+        self.add_z2adapters = AdapterConfig.add_z2adapters
         self.ln_1 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
         # self.attn = Cond_Attention(nx, n_ctx, config, AdapterConfig, scale)
         self.attn = MAM_Attention(nx, n_ctx, config, AdapterConfig, add_attn, add_mem, scale=scale)
@@ -769,8 +875,10 @@ class AdapterBlock(Block):
             self.crossattention = Attention(nx, n_ctx, config, scale, is_cross_attention=True)
             self.ln_cross_attn = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
         self.mlp = MLP(4 * nx, config)
+        if self.add_z2adapters:
+            self.z_proj = nn.Linear(AdapterConfig.hidden_size, AdapterConfig.adapter_size)
         self.Adaconfig = AdapterConfig
-        self.adapter = GPT2Adapter(AdapterConfig)
+        self.adapter = GPT2Adapter(AdapterConfig) if not self.add_z2adapters else Latent_GPT2Adapter(AdapterConfig)
 
 
     def forward(self, x, z,
@@ -791,13 +899,18 @@ class AdapterBlock(Block):
                 output_attentions=output_attentions,
                 prefix_state=prefix_state,
         )
+        if self.add_z2adapters:
+            z_proj = self.z_proj(z)
+        else:
+            z_proj = None
+
         ## [bs, max_len, hidden size]
         a = output_attn[0]  # output_attn: a, present, (attentions)
         outputs = output_attn[1:]
 
         if self.Adaconfig.ffn_option == "sequential_attn" or "houlsby":
             # label_emb = label_emb.unsqueeze(1).repeat(1, x.size(1), 1)
-            x = self.adapter(x)
+            x = self.adapter(x, z_proj=z_proj)
         ## residual connection
         x = x + a
         if encoder_hidden_states is not None:
@@ -822,18 +935,18 @@ class AdapterBlock(Block):
         m = self.mlp(self.ln_2(x))
         if self.Adaconfig.ffn_option == "parallel_attn":
             # label_emb = label_emb.unsqueeze(1).repeat(1, a.size(1), 1)
-            a = self.adapter(a, False)
+            a = self.adapter(a, False, z_proj=z_proj)
             x = x + a
         elif self.Adaconfig.ffn_option == "parallel_ffn":
             # label_emb = label_emb.unsqueeze(1).repeat(1, x.size(1), 1)
-            x = self.adapter(x)
+            x = self.adapter(x, z_proj=z_proj)
         elif self.Adaconfig.ffn_option == "sequential_ffn" or "houlsby":
             # label_emb = label_emb.unsqueeze(1).repeat(1, m.size(1), 1)
-            m = self.adapter(m)  ## a = a + adapter_change(a)
+            m = self.adapter(m, z_proj=z_proj)  ## a = a + adapter_change(a)
         x = x + m
         if self.Adaconfig.ffn_option == "pfeiffer":
             # label_emb = label_emb.unsqueeze(1).repeat(1, x.size(1), 1)
-            self.ln_3(self.adapter(x, adapter_res=False, residual=m, adapter_layernorm_option="in") + a)
+            self.ln_3(self.adapter(x, adapter_res=False, residual=m, adapter_layernorm_option="in") + a, z_proj=z_proj)
         outputs = [x] + outputs
         return outputs  # x, present, (attentions)
 ####################### auxiliary attention blocks w/ Adapter END ########################
@@ -876,7 +989,7 @@ class Encoder(GPT2Model):
         nz = AdapterConfig.latent_size
         if self.latent_type == "averaged_attn":
             self.averageSelfAttention = AverageSelfAttention(nx, AdapterConfig)
-        elif self.latent_type == "linear":
+        elif self.latent_type == "linear" or self.latent_type == "mean_max_linear":
             self.z_linear = nn.Linear(nx, nx)
             self.activation = nn.Tanh()
         else:
@@ -993,6 +1106,7 @@ class Encoder(GPT2Model):
             if self.output_attentions:
                 all_attentions.append(outputs[2])
 
+        ## the last hidden states
         hidden_states = self.ln_f(hidden_states)
 
         hidden_states = hidden_states.view(*output_shape)
@@ -1005,7 +1119,15 @@ class Encoder(GPT2Model):
         if self.latent_type == "averaged_attn":
             representations, _ = self.averageSelfAttention(hidden_states, attention_mask.squeeze(1).squeeze(1))
         elif self.latent_type == "linear":
-            representations = self.activation(self.z_linear(hidden_states[:, :8]).mean(1)) ## following optimus. We "pool" the model by simply taking the hidden state correspondin to the first token.
+            ## Optimus "pools" the model by simply taking the hidden state correspondin to the first token [CLS].
+            ## GPT-2 doesn't have [CLS] token, so we pool it by averaging the first 8 tokens or all tokens
+            representations = self.activation(self.z_linear(hidden_states[:, :]).mean(1))
+        elif self.latent_type == "mean_max_linear":
+            ## Mean Max pooling before feed to the linear layer
+            mean_pooling_embeddings = torch.mean(hidden_states, 1)
+            _, max_pooling_embeddings = torch.max(hidden_states, 1)
+            mean_max_embeddings = torch.cat((mean_pooling_embeddings, max_pooling_embeddings), 1)
+            representations = self.activation(self.z_linear(mean_max_embeddings))
         else:
             raise NotImplementedError("Not Implemented !")
         mean = self.mean(representations)

@@ -338,7 +338,7 @@ def train(args):
             else:
                 model.load_state_dict(state)
         load = True if args.load else False
-        final_folder = f"{args.dataset}_iter{args.iterations}_ft-{args.finetune_enc}_as-{args.adapter_size}_ls-{args.latent_size}_feature-{args.feature_based}_spl-{args.sample_per_label}_ppl-{args.percentage_per_label}_load{load}"
+        final_folder = f"{args.dataset}_iter{args.iterations}_ft-{args.finetune_enc}_as-{args.adapter_size}_ls-{args.latent_size}_feature-{args.feature_based}_spl-{args.sample_per_label}_ppl-{args.percentage_per_label}_load{load}_{date}"
 
         save_folder = os.path.join(args.out_dir, final_folder)
         os.makedirs(save_folder, exist_ok=True)

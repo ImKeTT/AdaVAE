@@ -989,8 +989,11 @@ class Encoder(GPT2Model):
         nz = AdapterConfig.latent_size
         if self.latent_type == "averaged_attn":
             self.averageSelfAttention = AverageSelfAttention(nx, AdapterConfig)
-        elif self.latent_type == "linear" or self.latent_type == "mean_max_linear":
+        elif self.latent_type == "linear":
             self.z_linear = nn.Linear(nx, nx)
+            self.activation = nn.Tanh()
+        elif self.latent_type == "mean_max_linear":
+            self.z_linear = nn.Linear(2*nx, nx)
             self.activation = nn.Tanh()
         else:
             raise NotImplementedError("Not implemented !")
@@ -1125,7 +1128,7 @@ class Encoder(GPT2Model):
         elif self.latent_type == "mean_max_linear":
             ## Mean Max pooling before feed to the linear layer
             mean_pooling_embeddings = torch.mean(hidden_states, 1)
-            _, max_pooling_embeddings = torch.max(hidden_states, 1)
+            max_pooling_embeddings, _ = torch.max(hidden_states, 1)
             mean_max_embeddings = torch.cat((mean_pooling_embeddings, max_pooling_embeddings), 1)
             representations = self.activation(self.z_linear(mean_max_embeddings))
         else:

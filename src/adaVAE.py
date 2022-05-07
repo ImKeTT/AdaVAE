@@ -288,8 +288,10 @@ def train(args):
 
     if args.add_attn and args.add_mem:
         fusion_type = "add_attn_mem"
-    elif args.add_attn and not args.add_mem:
+    elif args.add_attn and not args.add_mem and not args.add_z2adapters:
         fusion_type = "add_attn"
+    elif args.add_attn and args.add_z2adapters:
+        fusion_type = "add_attn_adap"
     elif args.add_mem and not args.add_attn:
         fusion_type = "add_mem"
     elif args.add_input:

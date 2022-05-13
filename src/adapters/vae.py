@@ -461,11 +461,12 @@ class Latent_GPT2Adapter(nn.Module):
             self.adapter_layer_norm_before = nn.LayerNorm(hidden_states.size(-1))
         if adapter_layernorm_option == 'in':
             hidden_states = self.adapter_layer_norm_before(hidden_states)
+        hidden_states = hidden_states
         ## essentially a ''down mapping'' and an ''up mapping'' process
         down_projected = self.down_project(hidden_states)
-        infused_projected = down_projected + z_proj
+        infused_projected = down_projected
         activated = self.activation(infused_projected)
-        up_projected = self.up_project(activated)
+        up_projected = self.up_project(activated) + z_proj
         up_projected *= self.scale
 
         if adapter_layernorm_option == 'out':
@@ -876,7 +877,7 @@ class AdapterBlock(Block):
             self.ln_cross_attn = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
         self.mlp = MLP(4 * nx, config)
         if self.add_z2adapters:
-            self.z_proj = nn.Linear(AdapterConfig.hidden_size, AdapterConfig.adapter_size)
+            self.z_proj = nn.Linear(AdapterConfig.hidden_size, AdapterConfig.hidden_size)
         self.Adaconfig = AdapterConfig
         self.adapter = GPT2Adapter(AdapterConfig) if not self.add_z2adapters else Latent_GPT2Adapter(AdapterConfig)
 

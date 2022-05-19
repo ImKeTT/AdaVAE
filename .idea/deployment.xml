@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" autoUpload="Always" serverName="tuhq@101.6.69.189:22">
+  <component name="PublishConfigData" autoUpload="Always" serverName="tuhq@127.0.0.1:10024">
     <serverData>
       <paths name="thq@101.6.69.181:22">
         <serverdata>
@@ -10,6 +10,13 @@
         </serverdata>
       </paths>
       <paths name="tuhq@101.6.69.189:22">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/data/tuhq/PTMs/bert_adapter" local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="tuhq@127.0.0.1:10024">
         <serverdata>
           <mappings>
             <mapping deploy="/data/tuhq/PTMs/bert_adapter" local="$PROJECT_DIR$" web="/" />

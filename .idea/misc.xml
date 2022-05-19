@@ -3,5 +3,5 @@
   <component name="JavaScriptSettings">
     <option name="languageLevel" value="ES6" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="Remote Python 3.6.13 (sftp://tuhq@101.6.69.189:22/home/ngn/anaconda3/envs/tuhq/bin/python)" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="Remote Python 3.6.13 (sftp://tuhq@127.0.0.1:10024/home/ngn/anaconda3/envs/tuhq/bin/python)" project-jdk-type="Python SDK" />
 </project>

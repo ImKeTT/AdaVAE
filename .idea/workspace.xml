@@ -1,12 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="ChangeListManager">
-    <list default="true" id="648e0dbe-3f84-4d61-8dc2-949f3936789a" name="Default" comment="">
+    <list default="true" id="648e0dbe-3f84-4d61-8dc2-949f3936789a" name="Default" comment="update comment">
+      <change beforePath="$PROJECT_DIR$/.idea/bert_adapter.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/bert_adapter.iml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/deployment.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/deployment.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/inspectionProfiles/profiles_settings.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/misc.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/adaVAE.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/adaVAE.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/adapters/common.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/adapters/common.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/adapters/vae.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/adapters/vae.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/run0.sh" beforeDir="false" afterPath="$PROJECT_DIR$/src/run0.sh" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/run1.sh" beforeDir="false" afterPath="$PROJECT_DIR$/src/run1.sh" afterDir="false" />
     </list>
     <option name="EXCLUDED_CONVERTED_TO_IGNORED" value="true" />
     <option name="TRACKING_ENABLED" value="true" />
@@ -16,142 +18,116 @@
     <option name="LAST_RESOLUTION" value="IGNORE" />
   </component>
   <component name="CoverageDataManager">
-    <SUITE FILE_PATH="coverage/bert_adapter$adaVAE.coverage" NAME="adaVAE Coverage Results" MODIFIED="1641397527535" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="true" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/src" />
+    <SUITE FILE_PATH="coverage/bert_adapter$py_test_in_run_glue_py.coverage" NAME="py.test in run_glue.py Coverage Results" MODIFIED="1648135424414" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="true" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/low_nlu" />
+    <SUITE FILE_PATH="coverage/bert_adapter$py_test_in_test_py.coverage" NAME="py.test in test.py Coverage Results" MODIFIED="1645604394785" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="true" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/src" />
+    <SUITE FILE_PATH="coverage/bert_adapter$run_spacefusion_gen.coverage" NAME="run_spacefusion_gen Coverage Results" MODIFIED="1647099940684" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="true" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/dialogue" />
+    <SUITE FILE_PATH="coverage/bert_adapter$run_vae_ctrl_gen.coverage" NAME="run_vae_ctrl_gen Coverage Results" MODIFIED="1647330422211" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="true" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/controlgen" />
+    <SUITE FILE_PATH="coverage/bert_adapter$preprocess_dailydialog.coverage" NAME="preprocess_dailydialog Coverage Results" MODIFIED="1644499989315" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="true" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/dialogue" />
+    <SUITE FILE_PATH="coverage/bert_adapter$cls_ft.coverage" NAME="cls_ft Coverage Results" MODIFIED="1643893132838" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="true" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/metrics" />
+    <SUITE FILE_PATH="coverage/bert_adapter$adaVAE.coverage" NAME="adaVAE Coverage Results" MODIFIED="1647080052608" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="true" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/src" />
   </component>
   <component name="FileEditorManager">
-    <splitter split-orientation="horizontal" split-proportion="0.30838814">
-      <split-first>
-        <leaf SIDE_TABS_SIZE_LIMIT_KEY="300">
-          <file leaf-file-name="models.py" pinned="false" current-in-tab="false">
-            <entry file="file://$PROJECT_DIR$/src/models.py">
-              <provider selected="true" editor-type-id="text-editor">
-                <state relative-caret-position="480">
-                  <caret line="38" column="90" selection-start-line="38" selection-start-column="84" selection-end-line="38" selection-end-column="90" />
-                  <folding>
-                    <element signature="e#0#24#0" expanded="true" />
-                  </folding>
-                </state>
-              </provider>
-            </entry>
-          </file>
-          <file leaf-file-name="adaVAE.py" pinned="false" current-in-tab="false">
-            <entry file="file://$PROJECT_DIR$/src/adaVAE.py">
-              <provider selected="true" editor-type-id="text-editor">
-                <state relative-caret-position="1740">
-                  <caret line="135" selection-start-line="135" selection-end-line="135" />
-                  <folding>
-                    <element signature="e#158#184#0" expanded="true" />
-                  </folding>
-                </state>
-              </provider>
-            </entry>
-          </file>
-          <file leaf-file-name="utils.py" pinned="false" current-in-tab="false">
-            <entry file="file://$PROJECT_DIR$/src/utils.py">
-              <provider selected="true" editor-type-id="text-editor">
-                <state relative-caret-position="1440">
-                  <caret line="115" column="16" selection-start-line="115" selection-start-column="16" selection-end-line="115" selection-end-column="23" />
-                  <folding>
-                    <element signature="e#157#178#0" expanded="true" />
-                  </folding>
-                </state>
-              </provider>
-            </entry>
-          </file>
-          <file leaf-file-name="main.py" pinned="false" current-in-tab="false">
-            <entry file="file://$PROJECT_DIR$/src/main.py">
-              <provider selected="true" editor-type-id="text-editor">
-                <state>
-                  <caret column="27" selection-end-column="27" />
-                </state>
-              </provider>
-            </entry>
-          </file>
-          <file leaf-file-name="common.py" pinned="false" current-in-tab="false">
-            <entry file="file://$PROJECT_DIR$/src/adapters/common.py">
-              <provider selected="true" editor-type-id="text-editor">
-                <state relative-caret-position="90">
-                  <caret line="8" column="30" selection-start-line="8" selection-start-column="30" selection-end-line="8" selection-end-column="30" />
-                  <folding>
-                    <element signature="e#0#46#0" expanded="true" />
-                  </folding>
-                </state>
-              </provider>
-            </entry>
-          </file>
-          <file leaf-file-name="__init__.py" pinned="false" current-in-tab="false">
-            <entry file="file://$PROJECT_DIR$/src/adapters/__init__.py">
-              <provider selected="true" editor-type-id="text-editor">
-                <state>
-                  <caret column="9" selection-start-column="9" selection-end-column="9" />
-                </state>
-              </provider>
-            </entry>
-          </file>
-          <file leaf-file-name="bert.py" pinned="false" current-in-tab="false">
-            <entry file="file://$PROJECT_DIR$/src/adapters/bert.py">
-              <provider selected="true" editor-type-id="text-editor">
-                <state relative-caret-position="90">
-                  <caret line="6" column="18" selection-start-line="6" selection-start-column="18" selection-end-line="6" selection-end-column="18" />
-                </state>
-              </provider>
-            </entry>
-          </file>
-          <file leaf-file-name="vae.py" pinned="false" current-in-tab="false">
-            <entry file="file://$PROJECT_DIR$/src/adapters/vae.py">
-              <provider selected="true" editor-type-id="text-editor">
-                <state relative-caret-position="4425">
-                  <caret line="315" column="14" selection-start-line="315" selection-start-column="14" selection-end-line="315" selection-end-column="14" />
-                  <folding>
-                    <element signature="e#190#204#0" expanded="true" />
-                  </folding>
-                </state>
-              </provider>
-            </entry>
-          </file>
-          <file leaf-file-name="data.py" pinned="false" current-in-tab="true">
-            <entry file="file://$PROJECT_DIR$/src/data.py">
-              <provider selected="true" editor-type-id="text-editor">
-                <state relative-caret-position="1097">
-                  <caret line="176" column="50" selection-start-line="176" selection-start-column="41" selection-end-line="176" selection-end-column="50" />
-                  <folding>
-                    <element signature="e#0#19#0" expanded="true" />
-                  </folding>
-                </state>
-              </provider>
-            </entry>
-          </file>
-        </leaf>
-      </split-first>
-      <split-second>
-        <leaf SIDE_TABS_SIZE_LIMIT_KEY="300">
-          <file leaf-file-name="vae.py" pinned="false" current-in-tab="false">
-            <entry file="file://$PROJECT_DIR$/src/adapters/vae.py">
-              <provider selected="true" editor-type-id="text-editor">
-                <state relative-caret-position="301">
-                  <caret line="429" selection-start-line="429" selection-end-line="429" />
-                  <folding>
-                    <element signature="e#190#204#0" expanded="true" />
-                  </folding>
-                </state>
-              </provider>
-            </entry>
-          </file>
-          <file leaf-file-name="adaVAE.py" pinned="false" current-in-tab="true">
-            <entry file="file://$PROJECT_DIR$/src/adaVAE.py">
-              <provider selected="true" editor-type-id="text-editor">
-                <state relative-caret-position="490">
-                  <caret line="375" column="32" selection-start-line="375" selection-start-column="32" selection-end-line="375" selection-end-column="32" />
-                  <folding>
-                    <element signature="e#158#184#0" expanded="true" />
-                  </folding>
-                </state>
-              </provider>
-            </entry>
-          </file>
-        </leaf>
-      </split-second>
-    </splitter>
+    <leaf SIDE_TABS_SIZE_LIMIT_KEY="300">
+      <file leaf-file-name="adaVAE.py" pinned="false" current-in-tab="false">
+        <entry file="file://$PROJECT_DIR$/src/adaVAE.py">
+          <provider selected="true" editor-type-id="text-editor">
+            <state relative-caret-position="5550">
+              <caret line="388" column="102" selection-start-line="388" selection-start-column="54" selection-end-line="388" selection-end-column="102" />
+              <folding>
+                <element signature="e#158#176#0" expanded="true" />
+              </folding>
+            </state>
+          </provider>
+        </entry>
+      </file>
+      <file leaf-file-name="run1.sh" pinned="false" current-in-tab="false">
+        <entry file="file://$PROJECT_DIR$/low_nlu/run1.sh">
+          <provider selected="true" editor-type-id="text-editor">
+            <state relative-caret-position="15">
+              <caret line="1" column="106" selection-start-line="1" selection-start-column="106" selection-end-line="1" selection-end-column="106" />
+            </state>
+          </provider>
+        </entry>
+      </file>
+      <file leaf-file-name="run.sh" pinned="false" current-in-tab="false">
+        <entry file="file://$PROJECT_DIR$/low_nlu/run.sh">
+          <provider selected="true" editor-type-id="text-editor">
+            <state relative-caret-position="45">
+              <caret line="3" column="68" selection-start-line="3" selection-start-column="68" selection-end-line="3" selection-end-column="68" />
+            </state>
+          </provider>
+        </entry>
+      </file>
+      <file leaf-file-name="vae.py" pinned="false" current-in-tab="false">
+        <entry file="file://$PROJECT_DIR$/src/adapters/vae.py">
+          <provider selected="true" editor-type-id="text-editor">
+            <state relative-caret-position="6900">
+              <caret line="468" column="58" selection-start-line="468" selection-start-column="58" selection-end-line="468" selection-end-column="58" />
+              <folding>
+                <element signature="e#190#204#0" expanded="true" />
+              </folding>
+            </state>
+          </provider>
+        </entry>
+      </file>
+      <file leaf-file-name="run_glue.py" pinned="false" current-in-tab="false">
+        <entry file="file://$PROJECT_DIR$/low_nlu/run_glue.py">
+          <provider selected="true" editor-type-id="text-editor">
+            <state relative-caret-position="6045">
+              <caret line="405" column="17" selection-start-line="405" selection-start-column="17" selection-end-line="405" selection-end-column="17" />
+              <folding>
+                <element signature="e#167#226#0" expanded="true" />
+              </folding>
+            </state>
+          </provider>
+        </entry>
+      </file>
+      <file leaf-file-name="common.py" pinned="false" current-in-tab="false">
+        <entry file="file://$PROJECT_DIR$/src/adapters/common.py">
+          <provider selected="true" editor-type-id="text-editor">
+            <state relative-caret-position="360">
+              <caret line="30" column="18" selection-start-line="30" selection-start-column="4" selection-end-line="30" selection-end-column="18" />
+            </state>
+          </provider>
+        </entry>
+      </file>
+      <file leaf-file-name="run0.sh" pinned="false" current-in-tab="false">
+        <entry file="file://$PROJECT_DIR$/src/run0.sh">
+          <provider selected="true" editor-type-id="text-editor">
+            <state>
+              <caret column="98" selection-end-line="1" />
+            </state>
+          </provider>
+        </entry>
+      </file>
+      <file leaf-file-name="README.md" pinned="false" current-in-tab="true">
+        <entry file="file://$PROJECT_DIR$/README.md">
+          <provider selected="true" editor-type-id="text-editor">
+            <state relative-caret-position="15">
+              <caret line="1" selection-start-line="1" selection-end-line="1" />
+            </state>
+          </provider>
+        </entry>
+      </file>
+      <file leaf-file-name="run1.sh" pinned="false" current-in-tab="false">
+        <entry file="file://$PROJECT_DIR$/src/run1.sh">
+          <provider selected="true" editor-type-id="text-editor">
+            <state>
+              <caret column="303" selection-start-column="303" selection-end-column="303" />
+            </state>
+          </provider>
+        </entry>
+      </file>
+      <file leaf-file-name="utils_glue.py" pinned="false" current-in-tab="false">
+        <entry file="file://$PROJECT_DIR$/low_nlu/utils_glue.py">
+          <provider selected="true" editor-type-id="text-editor">
+            <state relative-caret-position="6315">
+              <caret line="433" column="56" selection-start-line="433" selection-start-column="56" selection-end-line="433" selection-end-column="56" />
+            </state>
+          </provider>
+        </entry>
+      </file>
+    </leaf>
   </component>
   <component name="FileTemplateManagerImpl">
     <option name="RECENT_TEMPLATES">
@@ -162,36 +138,36 @@
   </component>
   <component name="FindInProjectRecents">
     <findStrings>
-      <find>selfoutput</find>
-      <find>hidden_states</find>
-      <find>from_file</find>
-      <find>loss</find>
-      <find>MLP</find>
-      <find>AdapterConfig</find>
-      <find>adaconfig</find>
+      <find>as</find>
+      <find>_as</find>
+      <find>lm_head</find>
+      <find>sequential</find>
+      <find>batch_size</find>
+      <find>load_dir</find>
+      <find>use_mean</find>
+      <find>out_dir</find>
+      <find>data_dir</find>
+      <find>experiment</find>
+      <find>activate_dec</find>
+      <find>iterations</find>
+      <find>percentage_per_label</find>
+      <find>-1</find>
+      <find>log_inter</find>
+      <find>early</find>
+      <find>do_train</find>
       <find>add_attn</find>
-      <find>store_true</find>
-      <find>GPT2Attention</find>
-      <find>GPT2Block</find>
-      <find>tokenizer</find>
-      <find>ada_config</find>
-      <find>MEAN</find>
-      <find>batch-sizes</find>
-      <find>batch-size</find>
-      <find>Nu_fc1</find>
-      <find>prior</find>
-      <find>switch_time</find>
-      <find>cur</find>
-      <find>tokeniz</find>
-      <find>output_a</find>
-      <find>GPT2Tokenizer</find>
-      <find>GPT2MLP</find>
-      <find>config</find>
-      <find>output_hidden_states</find>
-      <find>_attn</find>
-      <find>Attention</find>
-      <find>assert</find>
-      <find>label_onehot</find>
+      <find>AdapterBlock</find>
+      <find>add_mem</find>
+      <find>load</find>
+      <find>no_gpu</find>
+      <find>analogy</find>
+      <find>adapter_size</find>
+      <find>tune_enc</find>
+      <find>8</find>
+      <find>linear</find>
+      <find>accuracy_score</find>
+      <find>lr</find>
+      <find>scheduler</find>
     </findStrings>
   </component>
   <component name="Git.Settings">
@@ -204,12 +180,38 @@
         <option value="$PROJECT_DIR$/model.py" />
         <option value="$PROJECT_DIR$/src/preprocesser.py" />
         <option value="$PROJECT_DIR$/src/logger.py" />
-        <option value="$PROJECT_DIR$/src/utils.py" />
+        <option value="$PROJECT_DIR$/src/adapters/model_utils.py" />
+        <option value="$PROJECT_DIR$/metrics/__init__.py" />
+        <option value="$PROJECT_DIR$/src/adapters/__init__.py" />
         <option value="$PROJECT_DIR$/src/adapters/bert.py" />
+        <option value="$PROJECT_DIR$/metrics/cls_ft.py" />
+        <option value="$PROJECT_DIR$/dialogue/preprocess_dailydialog.py" />
+        <option value="$PROJECT_DIR$/dialogue/eval_dialog_response.py" />
+        <option value="$PROJECT_DIR$/dialogue/eval_dialog_multi_response.py" />
+        <option value="$PROJECT_DIR$/controlgen/run.sh" />
+        <option value="$PROJECT_DIR$/src/utils.py" />
+        <option value="$PROJECT_DIR$/controlgen/oracle_cls.py" />
+        <option value="$PROJECT_DIR$/dialogue/spacefusion.py" />
+        <option value="$PROJECT_DIR$/dialogue/run_spacefusion_gen.py" />
+        <option value="$PROJECT_DIR$/controlgen/ctrl_gen.py" />
+        <option value="$PROJECT_DIR$/low_nlu/download_glu_data.py" />
+        <option value="$PROJECT_DIR$/latent_interpolation/run_latent_generation.py" />
+        <option value="$PROJECT_DIR$/controlgen/run_vae_ctrl_gen.py" />
+        <option value="$PROJECT_DIR$/low_nlu/bert_adapter.py" />
+        <option value="$PROJECT_DIR$/src/test.py" />
         <option value="$PROJECT_DIR$/src/data.py" />
+        <option value="$PROJECT_DIR$/low_nlu/latent_classifier.py" />
+        <option value="$PROJECT_DIR$/low_nlu/utils_glue.py" />
+        <option value="$PROJECT_DIR$/low_nlu/run2.sh" />
+        <option value="$PROJECT_DIR$/low_nlu/run1.sh" />
+        <option value="$PROJECT_DIR$/low_nlu/run.sh" />
+        <option value="$PROJECT_DIR$/low_nlu/run_glue.py" />
         <option value="$PROJECT_DIR$/src/adapters/common.py" />
-        <option value="$PROJECT_DIR$/src/adapters/vae.py" />
         <option value="$PROJECT_DIR$/src/adaVAE.py" />
+        <option value="$PROJECT_DIR$/src/run0.sh" />
+        <option value="$PROJECT_DIR$/src/run1.sh" />
+        <option value="$PROJECT_DIR$/src/adapters/vae.py" />
+        <option value="$PROJECT_DIR$/README.md" />
       </list>
     </option>
   </component>
@@ -241,13 +243,22 @@
       <foldersAlwaysOnTop value="true" />
     </navigator>
     <panes>
-      <pane id="Scope" />
       <pane id="ProjectPane">
         <subPane>
           <expand>
             <path>
               <item name="bert_adapter" type="b2602c69:ProjectViewProjectNode" />
               <item name="bert_adapter" type="462c0819:PsiDirectoryNode" />
+            </path>
+            <path>
+              <item name="bert_adapter" type="b2602c69:ProjectViewProjectNode" />
+              <item name="bert_adapter" type="462c0819:PsiDirectoryNode" />
+              <item name="controlgen" type="462c0819:PsiDirectoryNode" />
+            </path>
+            <path>
+              <item name="bert_adapter" type="b2602c69:ProjectViewProjectNode" />
+              <item name="bert_adapter" type="462c0819:PsiDirectoryNode" />
+              <item name="low_nlu" type="462c0819:PsiDirectoryNode" />
             </path>
             <path>
               <item name="bert_adapter" type="b2602c69:ProjectViewProjectNode" />
@@ -264,6 +275,7 @@
           <select />
         </subPane>
       </pane>
+      <pane id="Scope" />
     </panes>
   </component>
   <component name="PropertiesComponent">
@@ -290,7 +302,7 @@
       </list>
     </option>
   </component>
-  <component name="RunManager">
+  <component name="RunManager" selected="Python tests.py.test in run_glue.py">
     <configuration name="adaVAE" type="PythonConfigurationType" factoryName="Python" temporary="true">
       <module name="bert_adapter" />
       <option name="INTERPRETER_OPTIONS" value="" />
@@ -310,9 +322,88 @@
       <option name="EMULATE_TERMINAL" value="false" />
       <option name="MODULE_MODE" value="false" />
     </configuration>
+    <configuration name="run_spacefusion_gen" type="PythonConfigurationType" factoryName="Python" temporary="true">
+      <module name="bert_adapter" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/dialogue" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/dialogue/run_spacefusion_gen.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+    </configuration>
+    <configuration name="run_vae_ctrl_gen" type="PythonConfigurationType" factoryName="Python" temporary="true">
+      <module name="bert_adapter" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/controlgen" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/controlgen/run_vae_ctrl_gen.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+    </configuration>
+    <configuration name="py.test in run_glue.py" type="tests" factoryName="py.test" temporary="true" nameIsGenerated="true">
+      <module name="bert_adapter" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/low_nlu" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
+      <option name="_new_keywords" value="&quot;&quot;" />
+      <option name="_new_additionalArguments" value="&quot;&quot;" />
+      <option name="_new_target" value="&quot;$PROJECT_DIR$/low_nlu/run_glue.py&quot;" />
+      <option name="_new_targetType" value="&quot;PATH&quot;" />
+    </configuration>
+    <configuration name="py.test in test.py" type="tests" factoryName="py.test" temporary="true" nameIsGenerated="true">
+      <module name="bert_adapter" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/src" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
+      <option name="_new_keywords" value="&quot;&quot;" />
+      <option name="_new_additionalArguments" value="&quot;&quot;" />
+      <option name="_new_target" value="&quot;$PROJECT_DIR$/src/test.py&quot;" />
+      <option name="_new_targetType" value="&quot;PATH&quot;" />
+    </configuration>
+    <list>
+      <item itemvalue="Python.adaVAE" />
+      <item itemvalue="Python tests.py.test in test.py" />
+      <item itemvalue="Python.run_vae_ctrl_gen" />
+      <item itemvalue="Python.run_spacefusion_gen" />
+      <item itemvalue="Python tests.py.test in run_glue.py" />
+    </list>
     <recent_temporary>
       <list>
+        <item itemvalue="Python tests.py.test in run_glue.py" />
+        <item itemvalue="Python.run_vae_ctrl_gen" />
+        <item itemvalue="Python.run_spacefusion_gen" />
         <item itemvalue="Python.adaVAE" />
+        <item itemvalue="Python tests.py.test in test.py" />
       </list>
     </recent_temporary>
   </component>
@@ -328,64 +419,395 @@
       <option name="presentableId" value="Default" />
       <updated>1640015069976</updated>
     </task>
-    <task id="LOCAL-00001" summary="initial commit of data processer and model training function">
-      <created>1640664578111</created>
-      <option name="number" value="00001" />
-      <option name="presentableId" value="LOCAL-00001" />
+    <task id="LOCAL-00102" summary="add kl loss v2">
+      <created>1646667988747</created>
+      <option name="number" value="00102" />
+      <option name="presentableId" value="LOCAL-00102" />
       <option name="project" value="LOCAL" />
-      <updated>1640664578111</updated>
+      <updated>1646667988757</updated>
     </task>
-    <task id="LOCAL-00002" summary="accomadate current transformer version">
-      <created>1641216655885</created>
-      <option name="number" value="00002" />
-      <option name="presentableId" value="LOCAL-00002" />
+    <task id="LOCAL-00103" summary="add ppl_elbo">
+      <created>1646669058373</created>
+      <option name="number" value="00103" />
+      <option name="presentableId" value="LOCAL-00103" />
       <option name="project" value="LOCAL" />
-      <updated>1641216655887</updated>
+      <updated>1646669058374</updated>
     </task>
-    <task id="LOCAL-00003" summary="update data processor">
-      <created>1641216676290</created>
-      <option name="number" value="00003" />
-      <option name="presentableId" value="LOCAL-00003" />
+    <task id="LOCAL-00104" summary="finish FB and FBP method for KL free bit annealing">
+      <created>1646807396766</created>
+      <option name="number" value="00104" />
+      <option name="presentableId" value="LOCAL-00104" />
       <option name="project" value="LOCAL" />
-      <updated>1641216676290</updated>
+      <updated>1646807396768</updated>
     </task>
-    <task id="LOCAL-00004" summary="initial commit of model utilities">
-      <created>1641216696418</created>
-      <option name="number" value="00004" />
-      <option name="presentableId" value="LOCAL-00004" />
+    <task id="LOCAL-00105" summary="fix adversarial loss issues (invalid)">
+      <created>1646838298960</created>
+      <option name="number" value="00105" />
+      <option name="presentableId" value="LOCAL-00105" />
       <option name="project" value="LOCAL" />
-      <updated>1641216696418</updated>
+      <updated>1646838298961</updated>
     </task>
-    <task id="LOCAL-00005" summary="add label embedding size to adapter config">
-      <created>1641216731676</created>
-      <option name="number" value="00005" />
-      <option name="presentableId" value="LOCAL-00005" />
+    <task id="LOCAL-00106" summary="add comments">
+      <created>1647010228360</created>
+      <option name="number" value="00106" />
+      <option name="presentableId" value="LOCAL-00106" />
       <option name="project" value="LOCAL" />
-      <updated>1641216731676</updated>
+      <updated>1647010228361</updated>
     </task>
-    <option name="localTasksCounter" value="6" />
+    <task id="LOCAL-00107" summary="add activation function for latent space pooler">
+      <created>1647014710928</created>
+      <option name="number" value="00107" />
+      <option name="presentableId" value="LOCAL-00107" />
+      <option name="project" value="LOCAL" />
+      <updated>1647014710929</updated>
+    </task>
+    <task id="LOCAL-00108" summary="add best acc selector &amp; disable summary writer">
+      <created>1647052140340</created>
+      <option name="number" value="00108" />
+      <option name="presentableId" value="LOCAL-00108" />
+      <option name="project" value="LOCAL" />
+      <updated>1647052140340</updated>
+    </task>
+    <task id="LOCAL-00109" summary="add early stop option">
+      <created>1647053391802</created>
+      <option name="number" value="00109" />
+      <option name="presentableId" value="LOCAL-00109" />
+      <option name="project" value="LOCAL" />
+      <updated>1647053391803</updated>
+    </task>
+    <task id="LOCAL-00110" summary="fix index overflow of beta scheduler issue">
+      <created>1647062304620</created>
+      <option name="number" value="00110" />
+      <option name="presentableId" value="LOCAL-00110" />
+      <option name="project" value="LOCAL" />
+      <updated>1647062304621</updated>
+    </task>
+    <task id="LOCAL-00111" summary="training completed, inference invalidated">
+      <created>1647100002781</created>
+      <option name="number" value="00111" />
+      <option name="presentableId" value="LOCAL-00111" />
+      <option name="project" value="LOCAL" />
+      <updated>1647100002781</updated>
+    </task>
+    <task id="LOCAL-00112" summary="lm_head trainable with higher degree of control">
+      <created>1647187252819</created>
+      <option name="number" value="00112" />
+      <option name="presentableId" value="LOCAL-00112" />
+      <option name="project" value="LOCAL" />
+      <updated>1647187252824</updated>
+    </task>
+    <task id="LOCAL-00113" summary="distinct sequential_attn/_ffn adapters">
+      <created>1647329818318</created>
+      <option name="number" value="00113" />
+      <option name="presentableId" value="LOCAL-00113" />
+      <option name="project" value="LOCAL" />
+      <updated>1647329818318</updated>
+    </task>
+    <task id="LOCAL-00114" summary="fix dialogue data iterator">
+      <created>1647443039855</created>
+      <option name="number" value="00114" />
+      <option name="presentableId" value="LOCAL-00114" />
+      <option name="project" value="LOCAL" />
+      <updated>1647443039858</updated>
+    </task>
+    <task id="LOCAL-00115" summary="distinct sequential adapter and houlsby adapter">
+      <created>1647443070454</created>
+      <option name="number" value="00115" />
+      <option name="presentableId" value="LOCAL-00115" />
+      <option name="project" value="LOCAL" />
+      <updated>1647443070454</updated>
+    </task>
+    <task id="LOCAL-00116" summary="add VQ-VAE option (invalid)">
+      <created>1647444159419</created>
+      <option name="number" value="00116" />
+      <option name="presentableId" value="LOCAL-00116" />
+      <option name="project" value="LOCAL" />
+      <updated>1647444159420</updated>
+    </task>
+    <task id="LOCAL-00117" summary="add vamprior and related packages">
+      <created>1647531262473</created>
+      <option name="number" value="00117" />
+      <option name="presentableId" value="LOCAL-00117" />
+      <option name="project" value="LOCAL" />
+      <updated>1647531262476</updated>
+    </task>
+    <task id="LOCAL-00118" summary="add comment">
+      <created>1647572167878</created>
+      <option name="number" value="00118" />
+      <option name="presentableId" value="LOCAL-00118" />
+      <option name="project" value="LOCAL" />
+      <updated>1647572167880</updated>
+    </task>
+    <task id="LOCAL-00119" summary="add activate full parameters in decoder option">
+      <created>1647606389059</created>
+      <option name="number" value="00119" />
+      <option name="presentableId" value="LOCAL-00119" />
+      <option name="project" value="LOCAL" />
+      <updated>1647606389062</updated>
+    </task>
+    <task id="LOCAL-00120" summary="add best logging">
+      <created>1647656495778</created>
+      <option name="number" value="00120" />
+      <option name="presentableId" value="LOCAL-00120" />
+      <option name="project" value="LOCAL" />
+      <updated>1647656495780</updated>
+    </task>
+    <task id="LOCAL-00121" summary="first commit of low resource NLU task">
+      <created>1647749048420</created>
+      <option name="number" value="00121" />
+      <option name="presentableId" value="LOCAL-00121" />
+      <option name="project" value="LOCAL" />
+      <updated>1647749048427</updated>
+    </task>
+    <task id="LOCAL-00122" summary="the newest and error-free version of GLUE dataset downloading">
+      <created>1647749072150</created>
+      <option name="number" value="00122" />
+      <option name="presentableId" value="LOCAL-00122" />
+      <option name="project" value="LOCAL" />
+      <updated>1647749072150</updated>
+    </task>
+    <task id="LOCAL-00123" summary="initial commit of latent_classifier">
+      <created>1647784401497</created>
+      <option name="number" value="00123" />
+      <option name="presentableId" value="LOCAL-00123" />
+      <option name="project" value="LOCAL" />
+      <updated>1647784401503</updated>
+    </task>
+    <task id="LOCAL-00124" summary="complete code of run_glue (invalidated)">
+      <created>1647792005123</created>
+      <option name="number" value="00124" />
+      <option name="presentableId" value="LOCAL-00124" />
+      <option name="project" value="LOCAL" />
+      <updated>1647792005125</updated>
+    </task>
+    <task id="LOCAL-00125" summary="update glue processing codes">
+      <created>1647792045343</created>
+      <option name="number" value="00125" />
+      <option name="presentableId" value="LOCAL-00125" />
+      <option name="project" value="LOCAL" />
+      <updated>1647792045344</updated>
+    </task>
+    <task id="LOCAL-00126" summary="add representation output option for encoder">
+      <created>1647792060182</created>
+      <option name="number" value="00126" />
+      <option name="presentableId" value="LOCAL-00126" />
+      <option name="project" value="LOCAL" />
+      <updated>1647792060182</updated>
+    </task>
+    <task id="LOCAL-00127" summary="add glue data to dict dataset class">
+      <created>1647848932172</created>
+      <option name="number" value="00127" />
+      <option name="presentableId" value="LOCAL-00127" />
+      <option name="project" value="LOCAL" />
+      <updated>1647848932174</updated>
+    </task>
+    <task id="LOCAL-00128" summary="fix glitch of activate_enc option">
+      <created>1647848956350</created>
+      <option name="number" value="00128" />
+      <option name="presentableId" value="LOCAL-00128" />
+      <option name="project" value="LOCAL" />
+      <updated>1647848956350</updated>
+    </task>
+    <task id="LOCAL-00129" summary="update runnable bash files">
+      <created>1647924189561</created>
+      <option name="number" value="00129" />
+      <option name="presentableId" value="LOCAL-00129" />
+      <option name="project" value="LOCAL" />
+      <updated>1647924189565</updated>
+    </task>
+    <task id="LOCAL-00130" summary="update glue classification codes">
+      <created>1647962298927</created>
+      <option name="number" value="00130" />
+      <option name="presentableId" value="LOCAL-00130" />
+      <option name="project" value="LOCAL" />
+      <updated>1647962298931</updated>
+    </task>
+    <task id="LOCAL-00131" summary="change early stop">
+      <created>1647962311299</created>
+      <option name="number" value="00131" />
+      <option name="presentableId" value="LOCAL-00131" />
+      <option name="project" value="LOCAL" />
+      <updated>1647962311299</updated>
+    </task>
+    <task id="LOCAL-00132" summary="fix function glitches">
+      <created>1647999735144</created>
+      <option name="number" value="00132" />
+      <option name="presentableId" value="LOCAL-00132" />
+      <option name="project" value="LOCAL" />
+      <updated>1647999735146</updated>
+    </task>
+    <task id="LOCAL-00133" summary="update bash files">
+      <created>1648054071227</created>
+      <option name="number" value="00133" />
+      <option name="presentableId" value="LOCAL-00133" />
+      <option name="project" value="LOCAL" />
+      <updated>1648054071230</updated>
+    </task>
+    <task id="LOCAL-00134" summary="add mmc metrics and option to use it">
+      <created>1648138351582</created>
+      <option name="number" value="00134" />
+      <option name="presentableId" value="LOCAL-00134" />
+      <option name="project" value="LOCAL" />
+      <updated>1648138351583</updated>
+    </task>
+    <task id="LOCAL-00135" summary="update interpolation and analogy operation">
+      <created>1648291714633</created>
+      <option name="number" value="00135" />
+      <option name="presentableId" value="LOCAL-00135" />
+      <option name="project" value="LOCAL" />
+      <updated>1648291714635</updated>
+    </task>
+    <task id="LOCAL-00136" summary="update glue dataloader">
+      <created>1648291846818</created>
+      <option name="number" value="00136" />
+      <option name="presentableId" value="LOCAL-00136" />
+      <option name="project" value="LOCAL" />
+      <updated>1648291846818</updated>
+    </task>
+    <task id="LOCAL-00137" summary="add sentence-pair classification option for GLUE">
+      <created>1648303246164</created>
+      <option name="number" value="00137" />
+      <option name="presentableId" value="LOCAL-00137" />
+      <option name="project" value="LOCAL" />
+      <updated>1648303246164</updated>
+    </task>
+    <task id="LOCAL-00138" summary="update data methods">
+      <created>1648303266800</created>
+      <option name="number" value="00138" />
+      <option name="presentableId" value="LOCAL-00138" />
+      <option name="project" value="LOCAL" />
+      <updated>1648303266800</updated>
+    </task>
+    <task id="LOCAL-00139" summary="add multiple run option for robust training/testing results">
+      <created>1648355507814</created>
+      <option name="number" value="00139" />
+      <option name="presentableId" value="LOCAL-00139" />
+      <option name="project" value="LOCAL" />
+      <updated>1648355507816</updated>
+    </task>
+    <task id="LOCAL-00140" summary="add different adapters for houslby">
+      <created>1648870293120</created>
+      <option name="number" value="00140" />
+      <option name="presentableId" value="LOCAL-00140" />
+      <option name="project" value="LOCAL" />
+      <updated>1648870293134</updated>
+    </task>
+    <task id="LOCAL-00141" summary="update save args">
+      <created>1648870318661</created>
+      <option name="number" value="00141" />
+      <option name="presentableId" value="LOCAL-00141" />
+      <option name="project" value="LOCAL" />
+      <updated>1648870318662</updated>
+    </task>
+    <task id="LOCAL-00142" summary="commit bash files">
+      <created>1649594790229</created>
+      <option name="number" value="00142" />
+      <option name="presentableId" value="LOCAL-00142" />
+      <option name="project" value="LOCAL" />
+      <updated>1649594790230</updated>
+    </task>
+    <task id="LOCAL-00143" summary="fix glitch">
+      <created>1651050460281</created>
+      <option name="number" value="00143" />
+      <option name="presentableId" value="LOCAL-00143" />
+      <option name="project" value="LOCAL" />
+      <updated>1651050460281</updated>
+    </task>
+    <task id="LOCAL-00144" summary="add shuffle=True to dataloader">
+      <created>1651293762843</created>
+      <option name="number" value="00144" />
+      <option name="presentableId" value="LOCAL-00144" />
+      <option name="project" value="LOCAL" />
+      <updated>1651293762845</updated>
+    </task>
+    <task id="LOCAL-00145" summary="add z to adapters option">
+      <created>1651765039398</created>
+      <option name="number" value="00145" />
+      <option name="presentableId" value="LOCAL-00145" />
+      <option name="project" value="LOCAL" />
+      <updated>1651765039400</updated>
+    </task>
+    <task id="LOCAL-00146" summary="add z to adapters options &amp; mean_max latent construction">
+      <created>1651765063054</created>
+      <option name="number" value="00146" />
+      <option name="presentableId" value="LOCAL-00146" />
+      <option name="project" value="LOCAL" />
+      <updated>1651765063054</updated>
+    </task>
+    <task id="LOCAL-00147" summary="modify log file format">
+      <created>1651927976619</created>
+      <option name="number" value="00147" />
+      <option name="presentableId" value="LOCAL-00147" />
+      <option name="project" value="LOCAL" />
+      <updated>1651927976621</updated>
+    </task>
+    <task id="LOCAL-00148" summary="fix errors w.r.t. mean_max generator&amp;add_z2adapters">
+      <created>1651928090957</created>
+      <option name="number" value="00148" />
+      <option name="presentableId" value="LOCAL-00148" />
+      <option name="project" value="LOCAL" />
+      <updated>1651928090957</updated>
+    </task>
+    <task id="LOCAL-00149" summary="update latent fusion method">
+      <created>1652410374550</created>
+      <option name="number" value="00149" />
+      <option name="presentableId" value="LOCAL-00149" />
+      <option name="project" value="LOCAL" />
+      <updated>1652410374553</updated>
+    </task>
+    <task id="LOCAL-00150" summary="update readme">
+      <created>1652410705194</created>
+      <option name="number" value="00150" />
+      <option name="presentableId" value="LOCAL-00150" />
+      <option name="project" value="LOCAL" />
+      <updated>1652410705195</updated>
+    </task>
+    <option name="localTasksCounter" value="151" />
     <servers />
+  </component>
+  <component name="TestHistory">
+    <history-entry file="py_test_in_test_py - 2022.02.03 at 22h 22m 20s.xml">
+      <configuration name="py.test in test.py" configurationId="tests" />
+    </history-entry>
+    <history-entry file="py_test_in_test_py - 2022.02.03 at 22h 22m 32s.xml">
+      <configuration name="py.test in test.py" configurationId="tests" />
+    </history-entry>
+    <history-entry file="py_test_in_test_py - 2022.02.23 at 16h 19m 55s.xml">
+      <configuration name="py.test in test.py" configurationId="tests" />
+    </history-entry>
+    <history-entry file="py_test_in_run_glue_py - 2022.03.21 at 15h 24m 51s.xml">
+      <configuration name="py.test in run_glue.py" configurationId="tests" />
+    </history-entry>
+    <history-entry file="py_test_in_run_glue_py - 2022.03.24 at 23h 23m 46s.xml">
+      <configuration name="py.test in run_glue.py" configurationId="tests" />
+    </history-entry>
+  </component>
+  <component name="TodoView" selected-index="1">
+    <todo-panel id="selected-file">
+      <is-autoscroll-to-source value="true" />
+    </todo-panel>
+    <todo-panel id="all">
+      <are-packages-shown value="true" />
+      <is-autoscroll-to-source value="true" />
+    </todo-panel>
   </component>
   <component name="ToolWindowManager">
     <frame x="1440" y="0" width="2560" height="1440" extended-state="0" />
-    <editor active="true" />
     <layout>
-      <window_info anchor="bottom" id="TODO" order="6" />
-      <window_info anchor="bottom" id="Event Log" order="7" side_tool="true" />
-      <window_info anchor="bottom" id="Database Changes" order="7" show_stripe_button="false" />
-      <window_info anchor="bottom" id="File Transfer" order="8" weight="0.02309985" />
-      <window_info active="true" anchor="bottom" id="Run" order="2" visible="true" weight="0.29210135" />
-      <window_info anchor="bottom" id="Version Control" order="7" />
-      <window_info anchor="bottom" id="Python Console" order="7" />
-      <window_info anchor="bottom" id="Terminal" order="7" weight="0.13561848" />
+      <window_info anchor="bottom" id="TODO" order="6" sideWeight="0.49960285" weight="0.32935917" />
+      <window_info anchor="bottom" id="Event Log" order="13" sideWeight="0.50039715" side_tool="true" weight="0.2533532" />
+      <window_info anchor="bottom" id="Database Changes" order="9" show_stripe_button="false" />
+      <window_info anchor="bottom" id="Run" order="2" sideWeight="0.4992057" weight="0.25558868" />
+      <window_info anchor="bottom" id="Version Control" order="8" weight="0.32935917" />
+      <window_info anchor="bottom" id="Python Console" order="11" weight="0.32935917" />
+      <window_info anchor="bottom" id="Terminal" order="10" sideWeight="0.4992057" weight="0.14307004" />
       <window_info anchor="right" id="Remote Host" order="3" />
-      <window_info content_ui="combo" id="Project" order="0" visible="true" weight="0.03415409" />
+      <window_info active="true" content_ui="combo" id="Project" order="0" visible="true" weight="0.15329626" />
       <window_info anchor="bottom" id="Docker" order="7" show_stripe_button="false" />
-      <window_info anchor="right" id="Database" order="3" />
-      <window_info anchor="bottom" id="Find" order="1" weight="0.32935917" />
-      <window_info anchor="right" id="SciView" order="3" />
+      <window_info anchor="right" id="Database" order="5" />
+      <window_info anchor="right" id="SciView" order="4" />
       <window_info id="Structure" order="1" side_tool="true" weight="0.25" />
-      <window_info anchor="bottom" id="Debug" order="3" weight="0.39940387" />
+      <window_info anchor="bottom" id="Debug" order="3" weight="0.47540984" />
       <window_info id="Favorites" order="2" side_tool="true" />
       <window_info anchor="right" content_ui="combo" id="Hierarchy" order="2" weight="0.25" />
       <window_info anchor="bottom" id="Inspection" order="5" weight="0.4" />
@@ -393,354 +815,95 @@
       <window_info anchor="right" id="Ant Build" order="1" weight="0.25" />
       <window_info anchor="bottom" id="Message" order="0" />
       <window_info anchor="bottom" id="Cvs" order="4" weight="0.25" />
+      <window_info anchor="bottom" id="File Transfer" order="12" sideWeight="0.4988086" visible="true" weight="0.02980626" />
+      <window_info anchor="bottom" id="Find" order="1" sideWeight="0.4992057" weight="0.32935917" />
     </layout>
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="1" />
   </component>
+  <component name="Vcs.Log.History.Properties">
+    <option name="COLUMN_ORDER">
+      <list>
+        <option value="0" />
+        <option value="2" />
+        <option value="3" />
+        <option value="1" />
+      </list>
+    </option>
+  </component>
+  <component name="Vcs.Log.Tabs.Properties">
+    <option name="TAB_STATES">
+      <map>
+        <entry key="MAIN">
+          <value>
+            <State>
+              <option name="RECENTLY_FILTERED_USER_GROUPS">
+                <collection />
+              </option>
+              <option name="RECENTLY_FILTERED_BRANCH_GROUPS">
+                <collection />
+              </option>
+              <option name="COLUMN_ORDER">
+                <list>
+                  <option value="0" />
+                  <option value="1" />
+                  <option value="2" />
+                  <option value="3" />
+                </list>
+              </option>
+            </State>
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
   <component name="VcsContentAnnotationSettings">
     <option name="myLimit" value="2678400000" />
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="initial commit of data processer and model training function" />
-    <MESSAGE value="accomadate current transformer version" />
-    <MESSAGE value="update data processor" />
-    <MESSAGE value="initial commit of model utilities" />
-    <MESSAGE value="add label embedding size to adapter config" />
-    <option name="LAST_COMMIT_MESSAGE" value="add label embedding size to adapter config" />
+    <MESSAGE value="add representation output option for encoder" />
+    <MESSAGE value="add glue data to dict dataset class" />
+    <MESSAGE value="fix glitch of activate_enc option" />
+    <MESSAGE value="update runnable bash files" />
+    <MESSAGE value="update glue classification codes" />
+    <MESSAGE value="change early stop" />
+    <MESSAGE value="fix function glitches" />
+    <MESSAGE value="update bash files" />
+    <MESSAGE value="add mmc metrics and option to use it" />
+    <MESSAGE value="update interpolation and analogy operation" />
+    <MESSAGE value="update glue dataloader" />
+    <MESSAGE value="add sentence-pair classification option for GLUE" />
+    <MESSAGE value="update data methods" />
+    <MESSAGE value="add multiple run option for robust training/testing results" />
+    <MESSAGE value="add different adapters for houslby" />
+    <MESSAGE value="update save args" />
+    <MESSAGE value="commit bash files" />
+    <MESSAGE value="fix glitch" />
+    <MESSAGE value="add shuffle=True to dataloader" />
+    <MESSAGE value="add z to adapters option" />
+    <MESSAGE value="add z to adapters options &amp; mean_max latent construction" />
+    <MESSAGE value="modify log file format" />
+    <MESSAGE value="fix errors w.r.t. mean_max generator&amp;add_z2adapters" />
+    <MESSAGE value="update latent fusion method" />
+    <MESSAGE value="update readme" />
+    <option name="LAST_COMMIT_MESSAGE" value="update readme" />
   </component>
   <component name="XDebuggerManager">
     <breakpoint-manager>
-      <option name="time" value="1" />
+      <option name="time" value="44" />
     </breakpoint-manager>
   </component>
   <component name="editorHistoryManager">
-    <entry file="file://$PROJECT_DIR$/src/models.py">
+    <entry file="file://$PROJECT_DIR$/controlgen/ctrl_gen.py">
       <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="480">
-          <caret line="38" column="90" selection-start-line="38" selection-start-column="84" selection-end-line="38" selection-end-column="90" />
-          <folding>
-            <element signature="e#0#24#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/utils.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="1440">
-          <caret line="115" column="16" lean-forward="true" selection-start-line="115" selection-start-column="16" selection-end-line="115" selection-end-column="23" />
-          <folding>
-            <element signature="e#157#178#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/main.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state>
-          <caret column="27" lean-forward="true" selection-end-column="27" />
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/adapters/common.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="90">
-          <caret line="8" column="30" selection-start-line="8" selection-start-column="30" selection-end-line="8" selection-end-column="30" />
-          <folding>
-            <element signature="e#0#46#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/adapters/__init__.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state>
-          <caret column="9" selection-start-column="9" selection-end-column="9" />
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/adapters/bert.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="90">
-          <caret line="6" column="18" selection-start-line="6" selection-start-column="18" selection-end-line="6" selection-end-column="18" />
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/data.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="2565">
-          <caret line="176" column="50" selection-start-line="176" selection-start-column="41" selection-end-line="176" selection-end-column="50" />
-          <folding>
-            <element signature="e#0#19#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/adapters/vae.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="4065">
-          <caret line="271" column="26" lean-forward="true" selection-start-line="271" selection-start-column="26" selection-end-line="271" selection-end-column="26" />
-          <folding>
-            <element signature="e#190#204#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/adaVAE.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="2010">
-          <caret line="134" selection-start-line="134" selection-end-line="134" />
-          <folding>
-            <element signature="e#158#184#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/models.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="495">
-          <caret line="33" column="30" selection-start-line="33" selection-start-column="30" selection-end-line="33" selection-end-column="30" />
-          <folding>
-            <element signature="e#0#24#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/utils.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="1470">
-          <caret line="119" column="32" selection-start-line="119" selection-start-column="32" selection-end-line="119" selection-end-column="32" />
-          <folding>
-            <element signature="e#157#178#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/main.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="870">
-          <caret line="58" column="30" lean-forward="true" selection-start-line="58" selection-start-column="30" selection-end-line="58" selection-end-column="30" />
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/adapters/common.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="225">
-          <caret line="15" column="16" lean-forward="true" selection-start-line="15" selection-start-column="16" selection-end-line="15" selection-end-column="16" />
-          <folding>
-            <element signature="e#0#46#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/data.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="2790">
-          <caret line="186" column="58" selection-start-line="186" selection-start-column="58" selection-end-line="186" selection-end-column="58" />
-          <folding>
-            <element signature="e#0#19#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/preprocesser.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="555">
-          <caret line="37" column="53" selection-start-line="37" selection-start-column="53" selection-end-line="37" selection-end-column="53" />
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/adapters/bert.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="1065">
-          <caret line="71" lean-forward="true" selection-start-line="71" selection-end-line="71" />
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/adapters/vae.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="3105">
-          <caret line="207" column="51" selection-start-line="207" selection-start-column="51" selection-end-line="207" selection-end-column="51" />
-          <folding>
-            <element signature="e#190#204#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/adaVAE.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="345">
-          <caret line="23" column="93" selection-start-line="23" selection-start-column="93" selection-end-line="23" selection-end-column="93" />
-          <folding>
-            <element signature="e#158#184#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/models.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="45">
-          <caret line="3" column="29" selection-start-line="3" selection-start-column="29" selection-end-line="3" selection-end-column="29" />
-          <folding>
-            <element signature="e#0#24#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/adaVAE.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="150">
-          <caret line="10" selection-start-line="10" selection-end-line="10" />
-          <folding>
-            <element signature="e#158#184#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/adapters/bert.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="840">
-          <caret line="56" column="28" lean-forward="true" selection-start-line="42" selection-end-line="56" selection-end-column="28" />
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/adapters/common.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state>
-          <folding>
-            <element signature="e#0#46#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/adapters/vae.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="5235">
-          <caret line="349" column="18" lean-forward="true" selection-start-line="349" selection-start-column="18" selection-end-line="349" selection-end-column="18" />
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/adapters/ptm_cvae.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="1290">
-          <caret line="86" column="26" selection-start-line="86" selection-start-column="26" selection-end-line="86" selection-end-column="26" />
-          <folding>
-            <element signature="e#160#242#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/data.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="375">
-          <caret line="25" column="12" lean-forward="true" selection-start-line="25" selection-start-column="12" selection-end-line="25" selection-end-column="12" />
-          <folding>
-            <element signature="e#0#19#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/main.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="60">
-          <caret line="4" column="17" selection-start-line="4" selection-start-column="17" selection-end-line="4" selection-end-column="17" />
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/models.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="45">
-          <caret line="3" column="29" lean-forward="true" selection-start-line="3" selection-start-column="29" selection-end-line="3" selection-end-column="29" />
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/main.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="375">
-          <caret line="36" column="26" selection-start-line="36" selection-start-column="26" selection-end-line="36" selection-end-column="26" />
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/adapters/bert.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="465">
-          <caret line="38" column="43" lean-forward="true" selection-start-line="38" selection-start-column="43" selection-end-line="38" selection-end-column="43" />
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/adapters/common.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state>
-          <folding>
-            <element signature="e#0#46#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/adapters/ptm_cvae.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="1005">
-          <caret line="86" column="26" lean-forward="true" selection-start-line="86" selection-start-column="26" selection-end-line="86" selection-end-column="26" />
-          <folding>
-            <element signature="e#160#242#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/data.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="315">
-          <caret line="22" column="23" selection-start-line="22" selection-start-column="23" selection-end-line="22" selection-end-column="23" />
-          <folding>
-            <element signature="e#0#19#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/adapters/vae.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="960">
-          <caret line="74" column="41" lean-forward="true" selection-start-line="74" selection-start-column="41" selection-end-line="74" selection-end-column="41" />
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/adapters/ptm_cvae.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="-7546">
-          <caret line="86" column="26" selection-start-line="86" selection-start-column="26" selection-end-line="86" selection-end-column="26" />
-          <folding>
-            <element signature="e#160#242#0" expanded="true" />
-          </folding>
+        <state relative-caret-position="6885">
+          <caret line="459" column="13" selection-start-line="459" selection-start-column="13" selection-end-line="459" selection-end-column="13" />
         </state>
       </provider>
     </entry>
     <entry file="file://$USER_HOME$/Library/Caches/PyCharm2018.1/remote_sources/-757263850/666907211/transformers/modeling_gpt2.py" />
-    <entry file="file://$PROJECT_DIR$/src/logger.py" />
     <entry file="file://$USER_HOME$/Library/Caches/PyCharm2018.1/remote_sources/-757263850/666907211/apex/__init__.py" />
-    <entry file="file://$PROJECT_DIR$/src/preprocesser.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="666">
-          <caret line="37" column="53" selection-start-line="37" selection-start-column="53" selection-end-line="37" selection-end-column="53" />
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/adapters/__init__.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state>
-          <caret column="9" selection-start-column="9" selection-end-column="9" />
-        </state>
-      </provider>
-    </entry>
-    <entry file="file://$PROJECT_DIR$/src/models.py">
-      <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="480">
-          <caret line="38" column="90" selection-start-line="38" selection-start-column="84" selection-end-line="38" selection-end-column="90" />
-          <folding>
-            <element signature="e#0#24#0" expanded="true" />
-          </folding>
-        </state>
-      </provider>
-    </entry>
     <entry file="file://$APPLICATION_HOME_DIR$/helpers/typeshed/stdlib/3/typing.pyi">
       <provider selected="true" editor-type-id="text-editor">
         <state relative-caret-position="421">
@@ -748,67 +911,257 @@
         </state>
       </provider>
     </entry>
-    <entry file="file://$PROJECT_DIR$/src/main.py">
+    <entry file="file://$APPLICATION_HOME_DIR$/helpers/pydev/_pydev_imps/_pydev_execfile.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="147">
+          <caret line="17" selection-start-line="17" selection-end-line="17" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/src/logger.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="480">
+          <caret line="32" selection-start-line="32" selection-end-line="32" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$USER_HOME$/Library/Caches/PyCharm2018.1/remote_sources/-757263850/666907211/torch/nn/modules/module.py" />
+    <entry file="file://$PROJECT_DIR$/src/adapters/model_utils.py" />
+    <entry file="file://$USER_HOME$/Library/Caches/PyCharm2018.1/remote_sources/1038245677/666907211/transformers/modeling_gpt2.py" />
+    <entry file="file://$USER_HOME$/Library/Caches/PyCharm2018.1/remote_sources/1038245677/666907211/transformers/modeling_utils.py" />
+    <entry file="file://$USER_HOME$/Library/Caches/PyCharm2018.1/remote_sources/1038245677/666907211/torch/nn/modules/linear.py" />
+    <entry file="file://$PROJECT_DIR$/metrics/__init__.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="15">
+          <caret line="1" column="22" selection-start-line="1" selection-start-column="22" selection-end-line="1" selection-end-column="22" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$USER_HOME$/Library/Caches/PyCharm2018.1/remote_sources/1038245677/666907211/transformers/tokenization_auto.py" />
+    <entry file="file://$USER_HOME$/Library/Caches/PyCharm2018.1/python_stubs/1038245677/builtins.py" />
+    <entry file="file://$PROJECT_DIR$/src/preprocesser.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="510">
+          <caret line="37" column="53" selection-start-line="37" selection-start-column="53" selection-end-line="37" selection-end-column="53" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/src/main.py" />
+    <entry file="file://$APPLICATION_HOME_DIR$/helpers/typeshed/stdlib/3/builtins.pyi">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="367">
+          <caret line="825" column="4" selection-start-line="825" selection-start-column="4" selection-end-line="825" selection-end-column="4" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/src/adapters/__init__.py">
       <provider selected="true" editor-type-id="text-editor">
         <state>
-          <caret column="27" selection-end-column="27" />
+          <caret column="43" selection-start-column="43" selection-end-column="43" />
         </state>
       </provider>
     </entry>
-    <entry file="file://$PROJECT_DIR$/src/adapters/bert.py">
+    <entry file="file://$PROJECT_DIR$/dialogue/eval_dialog_multi_response.py">
       <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="90">
-          <caret line="6" column="18" selection-start-line="6" selection-start-column="18" selection-end-line="6" selection-end-column="18" />
+        <state relative-caret-position="435">
+          <caret line="29" column="13" selection-start-line="29" selection-start-column="13" selection-end-line="29" selection-end-column="13" />
         </state>
       </provider>
     </entry>
-    <entry file="file://$PROJECT_DIR$/src/adapters/common.py">
+    <entry file="file://$PROJECT_DIR$/src/models.py" />
+    <entry file="file://$PROJECT_DIR$/src/adapters/bert.py" />
+    <entry file="file://$PROJECT_DIR$/src/adapters/ptm_cvae.py" />
+    <entry file="file://$USER_HOME$/Library/Caches/PyCharm2018.1/remote_sources/1038245677/666907211/apex/amp/wrap.py" />
+    <entry file="file://$PROJECT_DIR$/metrics/cls_ft.py">
       <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="90">
-          <caret line="8" column="30" selection-start-line="8" selection-start-column="30" selection-end-line="8" selection-end-column="30" />
-          <folding>
-            <element signature="e#0#46#0" expanded="true" />
-          </folding>
+        <state relative-caret-position="5025">
+          <caret line="336" column="35" selection-start-line="336" selection-start-column="35" selection-end-line="336" selection-end-column="35" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/dialogue/eval_dialog_response.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="120">
+          <caret line="15" column="97" selection-start-line="15" selection-start-column="38" selection-end-line="15" selection-end-column="97" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/controlgen/run.sh">
+      <provider selected="true" editor-type-id="text-editor">
+        <state>
+          <caret column="288" selection-start-column="288" selection-end-column="288" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/dialogue/preprocess_dailydialog.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="435">
+          <caret line="32" column="55" selection-start-line="32" selection-start-column="55" selection-end-line="32" selection-end-column="55" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/controlgen/oracle_cls.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="164">
+          <caret line="173" column="28" lean-forward="true" selection-start-line="173" selection-start-column="28" selection-end-line="173" selection-end-column="28" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/dialogue/run_spacefusion_gen.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="318">
+          <caret line="229" selection-start-line="229" selection-end-line="229" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/latent_interpolation/run_latent_generation.py" />
+    <entry file="file://$PROJECT_DIR$/low_nlu/download_glu_data.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="530">
+          <caret line="39" column="23" lean-forward="true" selection-start-line="39" selection-start-column="23" selection-end-line="39" selection-end-column="23" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/dialogue/spacefusion.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="2775">
+          <caret line="185" column="31" selection-start-line="185" selection-start-column="31" selection-end-line="185" selection-end-column="31" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$APPLICATION_HOME_DIR$/helpers/pycharm/_jb_pytest_runner.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="60">
+          <caret line="4" selection-start-line="4" selection-end-line="4" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/low_nlu/bert_adapter.py" />
+    <entry file="file://$PROJECT_DIR$/low_nlu/run2.sh">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="15">
+          <caret line="1" column="179" selection-start-line="1" selection-start-column="165" selection-end-line="1" selection-end-column="179" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/src/test.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="11415">
+          <caret line="776" column="66" selection-start-line="776" selection-start-column="66" selection-end-line="776" selection-end-column="66" />
         </state>
       </provider>
     </entry>
     <entry file="file://$PROJECT_DIR$/src/utils.py">
       <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="1440">
-          <caret line="115" column="16" selection-start-line="115" selection-start-column="16" selection-end-line="115" selection-end-column="23" />
+        <state relative-caret-position="1515">
+          <caret line="122" column="40" selection-start-line="122" selection-start-column="40" selection-end-line="122" selection-end-column="40" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/controlgen/ctrl_gen.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="6840">
+          <caret line="459" column="13" selection-start-line="459" selection-start-column="13" selection-end-line="459" selection-end-column="13" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/low_nlu/latent_classifier.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="705">
+          <caret line="49" column="79" selection-start-line="43" selection-start-column="8" selection-end-line="49" selection-end-column="79" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/src/data.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="685">
+          <caret line="166" column="8" selection-start-line="166" selection-start-column="8" selection-end-line="166" selection-end-column="8" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/low_nlu/utils_glue.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="6315">
+          <caret line="433" column="56" selection-start-line="433" selection-start-column="56" selection-end-line="433" selection-end-column="56" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/low_nlu/run.sh">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="45">
+          <caret line="3" column="68" selection-start-line="3" selection-start-column="68" selection-end-line="3" selection-end-column="68" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/low_nlu/run1.sh">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="15">
+          <caret line="1" column="106" selection-start-line="1" selection-start-column="106" selection-end-line="1" selection-end-column="106" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/src/adapters/common.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="360">
+          <caret line="30" column="18" selection-start-line="30" selection-start-column="4" selection-end-line="30" selection-end-column="18" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/src/run1.sh">
+      <provider selected="true" editor-type-id="text-editor">
+        <state>
+          <caret column="303" selection-start-column="303" selection-end-column="303" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/controlgen/run_vae_ctrl_gen.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="165">
+          <caret line="11" selection-start-line="11" selection-end-line="11" selection-end-column="22" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/low_nlu/run_glue.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="6045">
+          <caret line="405" column="17" selection-start-line="405" selection-start-column="17" selection-end-line="405" selection-end-column="17" />
           <folding>
-            <element signature="e#157#178#0" expanded="true" />
+            <element signature="e#167#226#0" expanded="true" />
           </folding>
         </state>
       </provider>
     </entry>
     <entry file="file://$PROJECT_DIR$/src/adapters/vae.py">
       <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="301">
-          <caret line="429" selection-start-line="429" selection-end-line="429" />
+        <state relative-caret-position="6900">
+          <caret line="468" column="58" selection-start-line="468" selection-start-column="58" selection-end-line="468" selection-end-column="58" />
           <folding>
             <element signature="e#190#204#0" expanded="true" />
           </folding>
         </state>
       </provider>
     </entry>
-    <entry file="file://$PROJECT_DIR$/src/data.py">
+    <entry file="file://$PROJECT_DIR$/src/adaVAE.py">
       <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="1097">
-          <caret line="176" column="50" selection-start-line="176" selection-start-column="41" selection-end-line="176" selection-end-column="50" />
+        <state relative-caret-position="5550">
+          <caret line="388" column="102" selection-start-line="388" selection-start-column="54" selection-end-line="388" selection-end-column="102" />
           <folding>
-            <element signature="e#0#19#0" expanded="true" />
+            <element signature="e#158#176#0" expanded="true" />
           </folding>
         </state>
       </provider>
     </entry>
-    <entry file="file://$PROJECT_DIR$/src/adaVAE.py">
+    <entry file="file://$PROJECT_DIR$/src/run0.sh">
       <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="490">
-          <caret line="375" column="32" selection-start-line="375" selection-start-column="32" selection-end-line="375" selection-end-column="32" />
-          <folding>
-            <element signature="e#158#184#0" expanded="true" />
-          </folding>
+        <state>
+          <caret column="98" selection-end-line="1" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/README.md">
+      <provider selected="true" editor-type-id="text-editor">
+        <state relative-caret-position="15">
+          <caret line="1" selection-start-line="1" selection-end-line="1" />
         </state>
       </provider>
     </entry>

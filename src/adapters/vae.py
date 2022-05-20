@@ -71,7 +71,7 @@ class AverageSelfAttention(nn.Module):
 class LatentSelfAttention(nn.Module):
     def __init__(self, attention_size, AdapterConfig):
         super(LatentSelfAttention, self).__init__()
-        self.linear_trans = nn.Linear(attention_size, attention_size, bias=False)
+        self.linear_trans = nn.Linear(attention_size, 1)
         self.softmax = nn.Softmax(dim=-1)
         if isinstance(AdapterConfig.adapter_act, str):
             self.activation = ACT2FN[AdapterConfig.adapter_act]
@@ -81,13 +81,13 @@ class LatentSelfAttention(nn.Module):
     def forward(self, inputs, attention_mask=None):
 
         ##################################################################
-        # STEP 1 - perform dot product
-        # of the attention vector and each hidden state
+        # STEP 1 - perform linear transformation to inputs x
         ##################################################################
 
         # inputs is a 3D Tensor: batch, len, hidden_size
         # scores is a 2D Tensor: batch, len
-        scores = self.activation(self.linear_trans(inputs))
+        key_z = self.linear_trans(inputs).squeeze(-1)
+        scores = self.activation(key_z)
 
         ##################################################################
         # Step 2 - Masking
@@ -97,9 +97,9 @@ class LatentSelfAttention(nn.Module):
             scores = scores + attention_mask
 
         ##################################################################
-        # Step 3 - Weighted sum of hidden states, by the attention scores
+        # Step 3 - x as V_z, f(x) as K_z, E is the Q_z
         ##################################################################
-        scores = self.softmax(scores)
+        scores = self.softmax(scores / key_z.size(0)**0.5)
 
         # multiply each hidden state with the attention weights
         weighted = torch.mul(inputs, scores.unsqueeze(-1).expand_as(inputs))
@@ -990,6 +990,8 @@ class Encoder(GPT2Model):
         nz = AdapterConfig.latent_size
         if self.latent_type == "averaged_attn":
             self.averageSelfAttention = AverageSelfAttention(nx, AdapterConfig)
+        elif self.latent_type == "latent_attn":
+            self.LatentAttention = LatentSelfAttention(nx, AdapterConfig)
         elif self.latent_type == "linear":
             self.z_linear = nn.Linear(nx, nx)
             self.activation = nn.Tanh()
@@ -1122,6 +1124,8 @@ class Encoder(GPT2Model):
         ## latent space parameterization
         if self.latent_type == "averaged_attn":
             representations, _ = self.averageSelfAttention(hidden_states, attention_mask.squeeze(1).squeeze(1))
+        elif self.latent_type == "latent_attn":
+            representations, _ = self.LatentAttention(hidden_states, attention_mask.squeeze(1).squeeze(1))
         elif self.latent_type == "linear":
             ## Optimus "pools" the model by simply taking the hidden state correspondin to the first token [CLS].
             ## GPT-2 doesn't have [CLS] token, so we pool it by averaging the first 8 tokens or all tokens

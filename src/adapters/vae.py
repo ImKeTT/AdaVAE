@@ -89,15 +89,12 @@ class LatentSelfAttention(nn.Module):
         key_z = self.linear_trans(inputs).squeeze(-1)
         scores = self.activation(key_z)
 
-        ##################################################################
-        # Step 2 - Masking
-        ##################################################################
-
         if attention_mask is not None:
             scores = scores + attention_mask
 
         ##################################################################
-        # Step 3 - x as V_z, f(x) as K_z, E is the Q_z
+        # Step 2 - Attention Multipliy
+        # x as V_z, f(x) as K_z, E is the Q_z
         ##################################################################
         scores = self.softmax(scores / key_z.size(0)**0.5)
 

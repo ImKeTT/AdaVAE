@@ -91,10 +91,10 @@ parser.add_argument('--eval_output_dir', type=str, default='eval_out')
 parser.add_argument('--restore_folder', type=str, default=None)
 parser.add_argument('--adapter_init', type=str, default='bert', choices=['lora', 'bert', 'lisa', 'other'],
                     help="parameter initialization method for adapter layers.")
-parser.add_argument('--latent_gen', type=str, default="averaged_attn",
+parser.add_argument('--latent_gen', type=str, default="latent_attn",
                     help="method for encoder to latent space, averaged_attn for average attention from "
                          "TransformerCVAE, linear for taken the first encoder token to a linear like Optimus",
-                    choices=['averaged_attn', 'linear'])
+                    choices=['latent_attn', 'averaged_attn', 'linear', 'mean_max_linear'])
 parser.add_argument('--workers', default=2, type=int, metavar='N',
                     help='number of data loading workers')
 

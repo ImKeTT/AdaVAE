@@ -50,10 +50,10 @@ parser.add_argument('--adapter_scalar', type=str, default="1.0",
 parser.add_argument('--ffn_option', type=str, default="parallel_ffn",
                     choices=['sequential', 'parallel_attn', 'parallel_ffn', 'pfeiffer'],
                     help="adapter type option")
-parser.add_argument('--latent_gen', type=str, default="averaged_attn",
+parser.add_argument('--latent_gen', type=str, default="latent_attn",
                     help="method for encoder to latent space, averaged_attn for average attention from "
                          "TransformerCVAE, linear for taken the first encoder token to a linear like Optimus",
-                    choices=['averaged_attn', 'linear'])
+                    choices=['latent_attn', 'averaged_attn', 'linear', 'mean_max_linear'])
 parser.add_argument('--attn_mode', type=str, default="none",
                     choices=['prefix', 'adapter', 'lora', 'none'],
                     help="attention transfer type")

@@ -69,10 +69,10 @@ parser.add_argument('--adapter_scalar', type=str, default="1.0",
 parser.add_argument('--ffn_option', type=str, default="parallel_ffn",
                     choices=['sequential_attn', 'sequential_ffn', 'parallel_attn', 'parallel_ffn', 'houlsby', 'pfeiffer'],
                     help="adapter type option")
-parser.add_argument('--latent_gen', type=str, default="averaged_attn",
+parser.add_argument('--latent_gen', type=str, default="latent_attn",
                     help="method for encoder to latent space, averaged_attn for average attention from "
                          "TransformerCVAE, linear for taken the first encoder token to a linear like Optimus",
-                    choices=['averaged_attn', 'linear', 'mean_max_linear'])
+                    choices=['latent_attn', 'averaged_attn', 'linear', 'mean_max_linear'])
 parser.add_argument('--attn_mode', type=str, default="prefix",
                     choices=['prefix', 'adapter', 'lora', 'none'],
                     help="attention transfer type")
@@ -383,8 +383,6 @@ def train(args):
                                tune_enc=args.finetune_enc,
                                tune_dec=args.finetune_dec,
                                add_z2adapters=args.add_z2adapters)
-    # assert ada_config.ffn_option in ['sequential', 'parallel_attn', 'parallel_ffn',
-    #                                  'pfeiffer'], 'expect proper ffn_option'
 
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
 
@@ -424,9 +422,6 @@ def train(args):
     # AdaVAE.transformer = unfreeze_GPT2_adapters(AdaVAE.transformer, Cond_GPT2Adapter)
     # AdaVAE.encoder = unfreeze_GPT2_adapters(AdaVAE.encoder, Cond_GPT2Adapter)
 
-    if args.learn_prior:
-        init_para_frompretrained(AdaVAE.encoder_prior, AdaVAE.encoder, share_para=True)
-        AdaVAE.encoder_prior.averageSelfAttention.attention_weights = AdaVAE.encoder.averageSelfAttention.attention_weights
     AdaVAE.lm_head.weight = gpt2_model.lm_head.weight
     if AdaVAE.add_softmax:
         AdaVAE.lm_head_rep = Conv1D(*gpt2_model.lm_head.weight.size())
@@ -452,7 +447,7 @@ def train(args):
     tuning_enc = False # pre-train the encoder to avoid KL Collapse
     for name, parameter in AdaVAE.named_parameters():
         new_pars = ['attention_weights', 'mean', 'logvar', 'input_proj', 'attn_proj', 'Nu_fc1', 'Nu_fc2',
-                    'lm_head_rep', 'z_linear', 'discriminator', 'latent2mem', 'c_z']
+                    'lm_head_rep', 'z_linear', 'discriminator', 'latent2mem', 'c_z', 'linear_trans']
 
         if not any([True if n in name else False for n in new_pars]):
             parameter.requires_grad = False
@@ -530,8 +525,9 @@ def train(args):
     ## load ckpt
     if args.load:
         logging.info('Loading model weights...')
-        state = torch.load(os.path.join("./out/yelp_data_iter10000_as128_scalar1.0_cycle-auto_prenc-start_wsTrue_lg-averaged_attn_add_attn_beta1.0_reg-kld_attn_mode-none_"
-                                        "ffn_option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-32_optFalse_zrate-10.0_fb-1sd-42_3.5/model_latest.pt"))  # , map_location='cpu' model_latest.pt
+        state = torch.load(os.path.join("./out/yahoo_data_iter22000_as128_scalar1.0_cycle-auto_prenc-start_wsTrue_"
+                                        "lg-averaged_attn_add_attn_beta1.0_reg-kld_attn_mode-none_ffn_option-sequential_attn_enc_layer-8_dec_layer-12_"
+                                        "zdim-32_optFalse_ftFalse_zrate-0.5_fb-1sd-42_3.19/model_best_val.pt"))  # , map_location='cpu' model_latest.pt
         if 'module' in list(state.keys())[0]:  # model_path is data parallel model with attr 'module'
             state_copy = copy.copy(state)
             keys = state_copy.keys()
@@ -568,6 +564,8 @@ def train(args):
         cnt_au = 0
         logp_sum = 0.
         reg_loss_sum = 0.
+        length_sum = 0.
+
         if args.weighted_sample:
             reported_loss_ppl = 0.
             reported_loss_rec = 0.
@@ -617,12 +615,14 @@ def train(args):
                 text = target_tokens.tolist()
                 tokens = [t[:t.index(endoftext) + 1] if endoftext in t else t for t in text]
                 words_bpe = sum([len(t) for t in tokens])
+                # length_sum += (l - 1) * n
                 n_words_bpe += words_bpe
                 logprob = val_ce_loss.mean()
 
 
                 logp_sum += logprob * words_bpe
 
+                ## add special token (batch size)
                 n_words_bpe += len(text)
 
                 ctext = [tokenizer.decode(target_tokens[i, :], clean_up_tokenization_spaces=True) for i in range(n)]
@@ -908,7 +908,7 @@ def train(args):
                 #     beta = args.beta_0
                 #     logging.info('KL annealing restart')
 
-                log_interval = 3000 if args.iterations <= 30000 else int(args.iterations / 10)
+                log_interval =  1# 3000 if args.iterations <= 30000 else int(args.iterations / 10)
                 if num_iters % log_interval == 0:
                     logging.info("test set")
                     _ = val_step(test_loader)

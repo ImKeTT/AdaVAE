@@ -10,10 +10,6 @@ import torch
 import torch.nn as nn
 import sys, os
 sys.path.append('../')
-import numpy as np
-from tensorboardX import SummaryWriter
-from torch.utils.data import Dataset, DataLoader
-from src.logger import Logger
 from src.adapters.vae import *
 from src.utils import *
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, AdamW, get_linear_schedule_with_warmup, Conv1D

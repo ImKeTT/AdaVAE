@@ -26,20 +26,15 @@ from utils_glue import (compute_metrics, convert_examples_to_features,
                         output_modes, processors)
 
 
-
-# os.environ["CUDA_VISIBLE_DEVICES"] = '1'
-
 parser = argparse.ArgumentParser()
 
 # Default parameters are set based on single GPU training
 parser.add_argument('--lr', type=float, default=1e-4)
 parser.add_argument("--seed", type=int, default=42)
 
-# parser.add_argument('--data_type', type=str, default='t1', choices=['t' + str(i) for i in range(9)], help="t: type")
-parser.add_argument('--model_type', type=str, default='cvae', choices=['cvae'])
 parser.add_argument('--iterations', type=int, default=10000 * 3)
-parser.add_argument('--dataset', type=str, default='yelp',
-                    help="Dataset to use for training") # choices=['yelp', 'cola', 'sst-2', 'mrpc', 'wnli'],
+parser.add_argument('--dataset', type=str, default='yelp', choices=['yelp', 'imdb', 'cola', 'sst-2', 'mrpc', 'wnli'],
+                    help="Dataset to use for training")
 parser.add_argument('--warmup', type=int, default=1000,
                     help="Amount of iterations to warmup, then decay. (-1 for no warmup and decay)")
 
@@ -120,61 +115,6 @@ parser.add_argument('--attn_proj_vary', action="store_true")
 parser.add_argument('--save_all', action="store_true", help="save full parameters of the model")
 
 
-def load_and_cache_examples(args, task, tokenizer, logger, evaluate=False):
-    if args.local_rank not in [-1, 0] and not evaluate:
-        torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
-
-    processor = processors[task]()
-    output_mode = output_modes[task]
-    # Load data features from cache or dataset file
-    cached_features_file = os.path.join(args.data_dir, 'cached_{}_{}_{}_{}_{}'.format(
-        'dev' if evaluate else 'train',
-        list(filter(None, args.model_name_or_path.split('/'))).pop(),
-        str(args.max_seq_length),
-        str(args.percentage_per_label),
-        str(task)))
-
-    if False: # os.path.exists(cached_features_file):
-        logger.info("Loading features from cached file %s", cached_features_file)
-        features = torch.load(cached_features_file)
-    else:
-        logger.info("Creating features from dataset file at %s", args.data_dir)
-        label_list = processor.get_labels()
-        if task in ['mnli', 'mnli-mm'] and args.model_type in ['roberta']:
-            # HACK(label indices are swapped in RoBERTa pretrained model)
-            label_list[1], label_list[2] = label_list[2], label_list[1]
-        examples = processor.get_dev_examples(args.data_dir) if evaluate else processor.get_train_examples(args.data_dir, args.percentage_per_label, args.sample_per_label)
-        features = convert_examples_to_features(examples, label_list, args.max_seq_length, tokenizer, output_mode,
-            cls_token_at_end=bool(args.model_type in ['xlnet']),            # xlnet has a cls token at the end
-            cls_token=tokenizer.cls_token,
-            cls_token_segment_id=2 if args.model_type in ['xlnet'] else 0,
-            sep_token=tokenizer.sep_token,
-            sep_token_extra=bool(args.model_type in ['roberta']),           # roberta uses an extra separator b/w pairs of sentences, cf. github.com/pytorch/fairseq/commit/1684e166e3da03f5b600dbb7855cb98ddfcd0805
-            pad_on_left=bool(args.model_type in ['xlnet']),                 # pad on the left for xlnet
-            pad_token=tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0],
-            pad_token_segment_id=4 if args.model_type in ['xlnet'] else 0,
-        )
-        if args.local_rank in [-1, 0]:
-            logger.info("Saving features into cached file %s", cached_features_file)
-            torch.save(features, cached_features_file)
-
-    if args.local_rank == 0 and not evaluate:
-        torch.distributed.barrier()  # Make sure only the first process in distributed training process the dataset, and the others will use the cache
-
-    # Convert to Tensors and build dataset
-    all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
-    all_input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
-    all_segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
-
-    if output_mode == "classification":
-        all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.long)
-    elif output_mode == "regression":
-        all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.float)
-
-    dataset = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
-    return dataset
-
-
 def tokenize(input_example, tokenizer, device, max_length):
     x_tokenized = tokenizer(input_example['text_a'], padding=True, truncation=True,
                                  max_length=max_length,
@@ -236,7 +176,6 @@ def test_step(model, input_tokens, att_mask, seg_ids, y_hat, mcc=False):
 
     if mcc:
         tn, fp, fn, tp = confusion_matrix(y_hat.cpu().numpy(), y.cpu().numpy()).ravel()
-        # tn, fp, fn, tp = tn.item(), fp.item(), fn.item(), tp.item()
         fz = tp * tn - fp * fn
         fm = (tp + fn) * (tp + fp) * (tn + fp) * (tn + fn)
         test_MCC = fz / pow(fm, 0.5)
@@ -297,7 +236,8 @@ def train(args):
                                    tune_enc=args.finetune_enc,
                                    tune_dec=False,
                                    latent_gen=args.latent_gen,
-                                   dis_emb=128)  ## two-stage training, should employ plain GPT-2 decoder/encoder + adapters
+                                   dis_emb=128,
+                                   add_z2adapters=False)  ## two-stage training, should employ plain GPT-2 decoder/encoder + adapters
 
         AdaVae_encoder = Encoder(config, ada_config)
         # AdaVae_average_attn = AverageSelfAttention(config.n_embd, ada_config)
@@ -308,19 +248,8 @@ def train(args):
         init_para_frompretrained(model.encoder, gpt2_model.transformer, share_para=True)
 
         if args.load:
-            prefix_load = "/data/tuhq/PTMs/bert_adapter/src/out/"
-            if args.dataset == "yelp":
-                load_folder = os.path.join(prefix_load,
-                                           "yelp_polarity_iter15000_as128_scalar1.0_cycle-auto_prenc-start_wsTrue_lg-averaged_attn_add_attn_beta1.0_reg-kld_attn_mode-none_ffn_option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-768_optFalse_ftFalse_zrate-0.1_fb-1sd-42_3.25")
-            elif args.dataset == "sst-2":
-                load_folder = os.path.join(prefix_load,
-                                           "sst-2_iter15000_as128_scalar1.0_cycle-auto_prenc-start_wsTrue_lg-averaged_attn_add_attn_beta1.0_reg-kld_attn_mode-none_ffn_option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-768_optFalse_ftFalse_zrate-0.1_fb-1sd-42_3.25")
-            elif args.dataset == "cola":
-                load_folder = os.path.join(prefix_load,
-                                           "cola_iter15000_as128_scalar1.0_cycle-auto_prenc-start_wsTrue_lg-averaged_attn_add_attn_beta1.0_reg-kld_attn_mode-none_ffn_option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-768_optFalse_ftFalse_zrate-0.1_fb-1sd-42_3.25")
-            else:
-                experiment = args.experiment
-                load_folder = args.load_dir
+            prefix_load = "../src/out/"
+            load_folder = os.path.join(prefix_load, args.load_dir)
             ## load ckpt
             print('Loading model weights...')
             state = torch.load(os.path.join(load_folder, 'model_best_val.pt'), map_location=device)  # , map_location='cpu' model_latest.pt
@@ -555,14 +484,15 @@ def train(args):
                     e += 1
                     logging.info("Training loop. The ith epoch completed: %d" % e)
 
-            # if args.save_all:
-            #     save_orderdict = model.state_dict()
-            # else:
-            #     save_orderdict = collections.OrderedDict()
-            #     for name, parameter in model.named_parameters():
-            #         if parameter.requires_grad:
-            #             save_orderdict[name] = parameter
-            # torch.save(save_orderdict, os.path.join(save_folder, 'model_latest.pt'))
+            if args.save_all:
+                save_orderdict = model.state_dict()
+            else:
+                save_orderdict = collections.OrderedDict()
+                for name, parameter in model.named_parameters():
+                    if parameter.requires_grad:
+                        save_orderdict[name] = parameter
+            torch.save(save_orderdict, os.path.join(save_folder, 'model_latest.pt'))
+
             logging.info('best loss      : %.4f' % best_loss)
             logging.info('best acc       : %.4f' % best_acc)
             logging.info('best precision : %.4f' % best_prec)

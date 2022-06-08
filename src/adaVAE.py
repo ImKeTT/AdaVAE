@@ -27,16 +27,12 @@ from transformers.modeling_utils import PreTrainedModel, Conv1D, prune_conv1d_la
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, AdamW, get_linear_schedule_with_warmup, Conv1D
 
 
-# devices = '0'
-# os.environ["CUDA_VISIBLE_DEVICES"] = '1'
-
 parser = argparse.ArgumentParser()
 
 # Default parameters are set based on single GPU training
 parser.add_argument('--lr', type=float, default=5e-5)
 parser.add_argument("--seed", type=int, default=42)
 
-# parser.add_argument('--data_type', type=str, default='t1', choices=['t' + str(i) for i in range(9)], help="t: type")
 parser.add_argument('--model_type', type=str, default='cvae', choices=['cvae', 'vqvae', 'daae'])
 parser.add_argument('--iterations', type=int, default=2000 * 3)
 parser.add_argument('--dataset', type=str, default='yelp_data', choices=['yelp_data', 'yahoo_data', 'snli_data',
@@ -93,6 +89,8 @@ parser.add_argument('--data-dir', type=str, default='data')
 parser.add_argument('--out-dir', type=str, default='out')
 parser.add_argument('--from_optimus', type=str, default=None,
                     help="file to load pre-trained transformer from Optimus GPT-2")
+parser.add_argument('--load_folder', type=str, default=None,
+                    help="folder to load trained model weights")
 parser.add_argument('--adapter_init', type=str, default='bert',
                     choices=['lora', 'bert', 'lisa', 'other'],
                     help="parameter initialization method for adapter layers.")
@@ -139,8 +137,7 @@ parser.add_argument('--finetune_enc', help="whether to fine-tune encoder, if Tru
 parser.add_argument('--finetune_dec', help="whether to fine-tune decoder, if True, no adapter added in decoder",
                     action="store_true")
 
-# args = parser.parse_args('test --batch-sizes 1 --seq-lens 1024 '
-#                          '--add_input --learn_prior --fp16'.split()) # wi.12.proj_vary_beta_cvae
+cache_dir = '/home/tuhq/.cache/torch/transformers'
 
 def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta, kl_rate, reg_loss, weighted_sample=False, from_mean=False, fb=1):
     """
@@ -202,9 +199,6 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
         nsamples = 100
         ns = 10
         bs = mean.size(0)
-        # loc = torch.zeros(mean.size(-1), device=device)
-        # scale = torch.ones(mean.size(-1), device=device)
-        # prior = torch.distributions.normal.Normal(loc, scale)
         ll_tmp, rc_tmp = [], []
         x_tokens = x_tokens.unsqueeze(1).expand(bs, ns, x_tokens.size(-1)).contiguous()
         for _ in range(int(nsamples / ns)):
@@ -223,7 +217,6 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
             # pdb.set_trace()
             rc_tmp.append(log_gen)
             ll_tmp.append(log_gen - log_prior + log_infer)
-            # weighted_KLD.append(log_prior - log_infer)
 
         log_prob_iw = log_sum_exp(torch.cat(ll_tmp, dim=-1), dim=-1) - math.log(nsamples)
         log_gen_iw = torch.mean(torch.cat(rc_tmp, dim=-1), dim=-1)
@@ -231,20 +224,7 @@ def compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn, beta,
     else:
         return loss, ce_loss, regularization_loss, mean, logvar
 
-def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, loss_fn, beta, kl_rate, reg_loss_type, from_mean, fb, model_type):
-    # output = []
-    # if model_type == 'ae_vae_fusion':
-    #     optimizer.zero_grad()
-    #     loss, ce_loss, kl_loss = compute_loss_ae(device, model, x_mask, x_tokens, y_mask, y_tokens, input_tokens,
-    #                                           target_tokens, mask, loss_fn, beta)
-    #     with amp.scale_loss(loss, optimizer) as scaled_loss:
-    #         scaled_loss.backward()
-    #         torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), 5.0)  # max_grad_norm=1.0
-    #     # loss.backward()
-    #     # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # max_grad_norm=1.0
-    #     optimizer.step()
-    #     output.append((loss.item(), ce_loss.mean().item(), kl_loss.item()))
-
+def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, loss_fn, beta, kl_rate, reg_loss_type, from_mean, fb):
     optimizer.zero_grad()
     loss, ce_loss, reg_loss, _, _ = compute_loss(device, model, x_tokens, input_tokens, att_mask, loss_fn,
                                           beta, kl_rate, reg_loss_type, weighted_sample=False, from_mean=from_mean, fb=fb)
@@ -264,18 +244,11 @@ def train_step(device, model, optimizer, x_tokens, input_tokens, att_mask, loss_
 
 def train(args):
     now = datetime.datetime.now()
-    # if args.model_type == 'cvae':
-    #     args.learn_prior = True
-    # else:
-    #     args.learn_prior = False
-
     # GPU
     if not torch.cuda.is_available(): args.no_gpu = True
     gpu = not args.no_gpu
     if gpu:
         print("There are ", torch.cuda.device_count(), " available GPUs!")
-        # print('Setting GPUs {}'.format(args.device))
-        # print('Using GPU devices {}'.format(devices))
         torch.cuda.set_device(args.gpu)
         print('Current single GPU: {}'.format(torch.cuda.current_device()))
     device = torch.device(args.gpu if gpu else "cpu")
@@ -322,8 +295,6 @@ def train(args):
                    f"beta{args.beta_0}_enc_layer-{args.encoder_n_layer}_dec_layer-{args.decoder_n_layer}_zdim-{args.latent_size}_opt{opt}_ft{fine_tune}_z" \
                    f"rate-{args.kl_rate}_fb-{args.fb}_sd-{args.seed}_{now.month}.{now.day}.log"
     logging = Logger(os.path.join(save_folder, logging_file))
-    # logging.basicConfig(filename=os.path.join(save_folder, 'train.log'),
-    #                     level=logging.INFO, format='%(asctime)s--- %(message)s', filemode='w')
     logging.info('\n*******************************************************************************\n')
     logging.info("the configuration:")
     logging.info(str(args).replace(',', '\n'))
@@ -384,12 +355,12 @@ def train(args):
                                tune_dec=args.finetune_dec,
                                add_z2adapters=args.add_z2adapters)
 
-    tokenizer = GPT2Tokenizer.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
+    tokenizer = GPT2Tokenizer.from_pretrained('gpt2', cache_dir=cache_dir)
 
     # Hack to allow tokenizing longer sequences.
     # tokenizer.max_len = int(1e12)
     if args.from_optimus is None:
-        gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
+        gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2', cache_dir=cache_dir)
         tokenizer.pad_token = tokenizer.eos_token
     else:
         logging.info("Loading Pre-trained weights from Optimus GPT-2")
@@ -525,9 +496,7 @@ def train(args):
     ## load ckpt
     if args.load:
         logging.info('Loading model weights...')
-        state = torch.load(os.path.join("./out/yahoo_data_iter22000_as128_scalar1.0_cycle-auto_prenc-start_wsTrue_"
-                                        "lg-averaged_attn_add_attn_beta1.0_reg-kld_attn_mode-none_ffn_option-sequential_attn_enc_layer-8_dec_layer-12_"
-                                        "zdim-32_optFalse_ftFalse_zrate-0.5_fb-1sd-42_3.19/model_best_val.pt"))  # , map_location='cpu' model_latest.pt
+        state = torch.load(os.path.join(args.load_folder, "model_best_val.pt"))  # , map_location='cpu' model_latest.pt
         if 'module' in list(state.keys())[0]:  # model_path is data parallel model with attr 'module'
             state_copy = copy.copy(state)
             keys = state_copy.keys()
@@ -584,8 +553,6 @@ def train(args):
             for i, val_data_dict in enumerate(val_loader):
                 with torch.no_grad():
                     val_x_ids, val_input_ids, val_attention_mask = tokenize(val_data_dict['x'], tokenizer, device, args)
-                    # val_label_onehot = F.one_hot(torch.tensor(val_data_dict['y']),
-                    #                          torch.tensor(ada_config.class_num)).float().to(device)
                     if args.weighted_sample:
                         val_loss, val_ce_loss, val_reg_loss, val_mu, val_lv, \
                         val_loss_ppl, val_loss_rec = compute_loss(device, AdaVAE, val_x_ids,
@@ -601,9 +568,6 @@ def train(args):
                                                                                            val_attention_mask,
                                                                                            loss_fn, 1.0, 0.0,
                                                                                            args.reg_loss, fb=args.fb)
-                    # else:
-                    #     loss, ce_loss, kl_loss = compute_loss_ae(device, AdaVAE, x_mask, x_tokens, y_mask, y_tokens,
-                    #                                              input_tokens, target_tokens, mask, loss_fn, 1.0)
                 """
                 calculate text perplexity
                 """
@@ -821,7 +785,6 @@ def train(args):
         logging.info('\n----------------------------------------------------------------------')
         logging.info("Training loop.       Batches: %d" % len(train_loader))
 
-        # train_iter = iter(train_loader); x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask = next(train_iter)
         with tqdm(total=len(train_loader)) as pbar:
             for i, data_dict in enumerate(train_loader):
                 x_ids, input_ids, attention_mask = tokenize(data_dict['x'], tokenizer, device, args)
@@ -871,7 +834,7 @@ def train(args):
                 else:
                     kl_rate = args.kl_rate
                 loss, ce_loss, regul_loss = train_step(device, AdaVAE, optimizer, x_ids, input_ids, attention_mask,
-                                                       loss_fn, beta, kl_rate, args.reg_loss, False, args.fb, args.model_type)
+                                                       loss_fn, beta, kl_rate, args.reg_loss, False, args.fb)
                 if args.reg_loss == "adversarial":
                     d_loss, g_loss, kld = regul_loss[0].item(), regul_loss[1].item(), regul_loss[2].item()
                 else:
@@ -889,12 +852,6 @@ def train(args):
                     t_writer.add_scalar('g_loss', g_loss, num_iters)
                 t_writer.add_scalar('beta', beta, num_iters)
 
-                # if args.model_type == 'ae_vae_fusion':
-                #     loss, ce_loss, kl_loss = output[0]
-                #     # Log to Tensorboard
-                #     t_writer.add_scalar('ae_loss', loss, num_iters)
-                #     t_writer.add_scalar('ae_kl', kl_loss, num_iters)
-
                 st = time.time()
                 end = num_iters >= args.iterations
 
@@ -904,11 +861,7 @@ def train(args):
                 num_iters += 1
                 pbar.update(1)
 
-                # if (args.cycle != "const") and (num_iters % cycle_num == 0):
-                #     beta = args.beta_0
-                #     logging.info('KL annealing restart')
-
-                log_interval =  1# 3000 if args.iterations <= 30000 else int(args.iterations / 10)
+                log_interval = int(args.iterations / 5)
                 if num_iters % log_interval == 0:
                     logging.info("test set")
                     _ = val_step(test_loader)
@@ -934,7 +887,6 @@ def train(args):
                 if num_iters % int(args.iterations / 0.5) == 0:
                     logging.info('Saving model...')
                     logging.info("Iteration completed: %d, remained %d" % (num_iters, args.iterations - num_iters))
-                    logging.info("Saving model...")
                     logging.info('\n------------------------------------------------------')
 
                     if args.save_all:
@@ -950,22 +902,7 @@ def train(args):
                 if et >= args.early_stop:
                     logging.info("Early Stopping..")
                     break
-                    # torch.save(optimizer.state_dict(),
-                    #            os.path.join(save_folder, 'ckpt/opt',
-                    #                         'optimizer_' + '{:07d}'.format(num_iters) + '.pt'))
 
-                # if args.switch_time > 0 and num_iters == int(args.iterations * args.switch_time):
-                #     print('Switch to long sequence training')
-                #     logging.info("Switch to long sequence training")
-                #     cur_b_schedule += 1
-                #     train_loader, val_loader, test_loader = prepare_dataset(
-                #         args.data_dir, args.dataset, tokenizer,
-                #         batch_schedule[cur_b_schedule][0], batch_schedule[cur_b_schedule][1],
-                #         batch_schedule[-1][0], batch_schedule[-1][1],
-                #         batch_schedule[-1][0], batch_schedule[-1][1],
-                #         make_test=True,
-                #         num_workers=args.workers, data_type=args.data_type
-                #     )
         if not end:
             e += 1
             logging.info("Training loop. The ith epoch completed: %d" % e)
@@ -987,14 +924,15 @@ def train(args):
     logging.info('Best MI       : %.4f' % best_val_mi)
     logging.info('Best AU       : %.4f' % best_val_n_au)
 
-    # if args.save_all:
-    #     save_orderdict = AdaVAE.state_dict()
-    # else:
-    #     save_orderdict = collections.OrderedDict()
-    #     for name, parameter in AdaVAE.named_parameters():
-    #         if parameter.requires_grad:
-    #             save_orderdict[name] = parameter
-    # torch.save(save_orderdict, os.path.join(save_folder, 'model_latest.pt'))
+    if args.save_all:
+        save_orderdict = AdaVAE.state_dict()
+    else:
+        save_orderdict = collections.OrderedDict()
+        for name, parameter in AdaVAE.named_parameters():
+            if parameter.requires_grad:
+                save_orderdict[name] = parameter
+    torch.save(save_orderdict, os.path.join(save_folder, 'model_latest.pt'))
+
     logging.info('Training complete.')
 
 if __name__=="__main__":

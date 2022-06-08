@@ -14,7 +14,6 @@ import torch.nn as nn
 import math, sys
 import torch.nn.functional as F
 from transformers.modeling_gpt2 import ACT2FN, Attention, GPT2Model, Block, MLP, GPT2LMHeadModel
-# from transformers.models.gpt2.modeling_gpt2 import ACT2FN, GPT2Attention, GPT2Model, GPT2Block, GPT2MLP, GPT2LMHeadModel
 from transformers.modeling_utils import PreTrainedModel, Conv1D, prune_conv1d_layer, SequenceSummary
 sys.path.append('../')
 from .common import AdapterConfig, init_lisa_params, init_bert_weights, init_bias_mlp, init_zero_weights, \
@@ -107,7 +106,6 @@ class LatentSelfAttention(nn.Module):
         return representations, scores
 
 
-# Pseudo self-attention
 ## PSA for additive z infusion
 class Cond_Attention(Attention):
     def __init__(self, nx, n_ctx, config, AdapterConfig, scale=False):
@@ -477,87 +475,6 @@ class Latent_GPT2Adapter(nn.Module):
             out = up_projected
         return out
 
-## Conditional GPT2 Adapter, support parallel or sequential adapter (LoRA/Adapter)
-class Cond_GPT2Adapter(nn.Module):
-    """GPT2Adapter with label embedding infused during generation"""
-    def __init__(self, AdapterConfig: AdapterConfig):
-        super(Cond_GPT2Adapter, self).__init__()
-        self.down_project = nn.Linear(AdapterConfig.hidden_size, AdapterConfig.adapter_size)
-        self.up_project = nn.Linear(AdapterConfig.adapter_size + AdapterConfig.label_emb_size, AdapterConfig.hidden_size)
-        # self.infuser = nn.Linear(AdapterConfig.label_emb_size+AdapterConfig.hidden_size, AdapterConfig.hidden_size)
-        ## initialize up_project weight and bias
-        ## initialize down_project weight and bias
-        if AdapterConfig.init == "bert":
-            self.apply(init_bert_weights)
-        elif AdapterConfig.init == "lisa":
-            self.apply(init_lisa_params)
-        elif AdapterConfig.init == "lora":
-            with torch.no_grad():
-                nn.init.kaiming_uniform_(self.down_project.weight, a=math.sqrt(5))
-                nn.init.zeros_(self.up_project.weight)
-                nn.init.zeros_(self.down_project.bias)
-                nn.init.zeros_(self.up_project.bias)
-        else:
-            nn.init.normal_(self.up_project.weight, std=AdapterConfig.adapter_initializer_range)
-            nn.init.zeros_(self.up_project.bias)
-            nn.init.normal_(self.down_project.weight, std=AdapterConfig.adapter_initializer_range)
-            nn.init.zeros_(self.down_project.bias)
-
-        if AdapterConfig.adapter_scalar=="learnable_scalar":
-            self.scale = nn.Parameter(torch.ones(1))
-        else:
-            self.scale = float(AdapterConfig.adapter_scalar)
-
-        if isinstance(AdapterConfig.adapter_act, str):
-            self.activation = ACT2FN[AdapterConfig.adapter_act]
-        else:
-            self.activation = AdapterConfig.adapter_act
-
-
-    def forward(self, hidden_states: torch.Tensor, label_embedding: torch.Tensor,
-                adapter_res:bool=True, residual: torch.Tensor=None, adapter_layernorm_option:str=None):
-        if adapter_layernorm_option == "in" or adapter_layernorm_option == "out":
-            self.adapter_layer_norm_before = nn.LayerNorm(hidden_states.size(-1))
-        assert len(label_embedding.size()) == 3, f'label embedding should have dimension of 3'
-        if adapter_layernorm_option == 'in':
-            hidden_states = self.adapter_layer_norm_before(hidden_states)
-        ## essentially a ''down mapping'' and an ''up mapping'' process
-        down_projected = self.down_project(hidden_states)
-        infused_projected = torch.cat([label_embedding, down_projected], -1)
-        activated = self.activation(infused_projected)
-        up_projected = self.up_project(activated)
-        up_projected *= self.scale
-
-        if adapter_layernorm_option == 'out':
-            up_projected = self.adapter_layer_norm_before(up_projected)
-
-        if residual is not None:
-            up_projected += residual
-        if adapter_res:
-            out = hidden_states + up_projected
-        else:
-            out = up_projected
-        return out
-
-"""
-class BertAdaptedSelfOutput(nn.Module):
-    def __init__(self,
-                 self_output: BertSelfOutput,
-                 config: AdapterConfig):
-        super(BertAdaptedSelfOutput, self).__init__()
-        self.self_output = self_output
-        self.adapter = BertAdapter(config)
-
-    def forward(self, hidden_states: torch.Tensor, input_tensor: torch.Tensor):
-        hidden_states = self.self_output.dense(hidden_states)
-        hidden_states = self.self_output.dropout(hidden_states)
-        ## instantiate adapter obj
-        hidden_states = self.adapter(hidden_states)
-        hidden_states = self.self_output.LayerNorm(hidden_states + input_tensor)
-        return hidden_states
-"""
-
-
 ################################# Attention Blocks #########################################
 ####################### auxiliary attention blocks w/o Adapter BEGIN #######################
 class Unmasked_Attention(Attention):
@@ -724,29 +641,6 @@ class Unmasked_Block(Block):
         self.attn = Unmasked_Attention(nx, n_ctx, config, scale)
         self.ln_2 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
         self.mlp = MLP(4 * nx, config)
-
-## Additive attention block for method 2 in the paper
-class Cond_Masked_Block(Block):
-    def __init__(self, n_ctx, config, AdapterConfig, scale=False):
-        super(Block, self).__init__()
-        nx = config.n_embd
-        self.ln_1 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
-        self.attn = Cond_Attention(nx, n_ctx, config, AdapterConfig, scale)
-        self.ln_2 = nn.LayerNorm(nx, eps=config.layer_norm_epsilon)
-        self.mlp = MLP(4 * nx, config)
-
-    def forward(self, x, z, layer_past=None, attention_mask=None, head_mask=None):
-        output_attn = self.attn(
-            self.ln_1(x), z, layer_past=layer_past, attention_mask=attention_mask, head_mask=head_mask
-        )
-        a = output_attn[0]  # output_attn: a, present, (attentions)
-
-        x = x + a
-        m = self.mlp(self.ln_2(x))
-        x = x + m
-
-        outputs = [x] + output_attn[1:]
-        return outputs  # x, present, (attentions)
 
 ## Additive attention block for method 2 in the paper
 class Masked_Block(Block):
@@ -1399,7 +1293,9 @@ class LM_head_rep(nn.Module):
         z = self.Nu_fc2(z)
         return z
 
-
+####################################################################################################
+################################# VQ-VAE in Progress ###############################################
+####################################################################################################
 ## For VQ-VAE like big AE
 class CodeBook(nn.Module):
     def __init__(self, num_embeddings, embedding_dim, commitment_cost):
@@ -1534,6 +1430,9 @@ class VAEModel(GPT2LMHeadModel):
 
         return outputs  # lm_logits, presents, (all hidden_states), (attentions), (kl_loss)
 
+#####################################################################################
+################################# AdaVAE ############################################
+#####################################################################################
 class AdaVAEModel(GPT2LMHeadModel):
     def __init__(self, config, AdapterConfig, add_input=False, add_attn=False, add_softmax=False, add_mem=False,
                  attn_proj_vary=False, learn_prior=False, reg_loss="kld"):

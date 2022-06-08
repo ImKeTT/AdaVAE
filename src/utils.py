@@ -264,9 +264,3 @@ def compare_date(date1: str, date2: str)->bool:
             return True
         else:
             return False
-
-
-
-###############################
-######## metrics utils ########
-###############################

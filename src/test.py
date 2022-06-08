@@ -23,13 +23,11 @@ from torch.utils.data import Dataset, DataLoader
 from transformers.modeling_utils import PreTrainedModel, Conv1D, prune_conv1d_layer, SequenceSummary
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, AdamW, get_linear_schedule_with_warmup, Conv1D
 
-# os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 parser = argparse.ArgumentParser()
 
 # Default parameters are set based on single GPU training
 parser.add_argument("--seed", type=int, default=42)
 
-# parser.add_argument('--data_type', type=str, default='t1', choices=['t' + str(i) for i in range(9)], help="t: type")
 parser.add_argument('--model_type', type=str, default='cvae', choices=['cvae'])
 parser.add_argument('--dataset', type=str, default='yelp_polarity', choices=['yelp_polarity, imdb_polariry'],
                     help="Dataset to use for training")
@@ -79,7 +77,7 @@ parser.add_argument("--max_test_batch", default=10, type=int, help="Total senten
 parser.add_argument("--num_interpolation_step", default=10, type=int)
 parser.add_argument("--degree_to_target", type=float, default=1.0)
 parser.add_argument("--max_val_batches", type=int, help="Max batch size number to test recontruction.", default=30)
-parser.add_argument("--latest_date", type=str, help="Latest date for model testing.", default="2.26")
+parser.add_argument("--latest_date", type=str, help="Latest date for model testing.", default="")
 
 ## metrics
 parser.add_argument('--au_delta', type=float, default=0.01,
@@ -109,9 +107,12 @@ parser.add_argument('--attn_proj_vary', action="store_true")
 parser.add_argument('--finetune_enc', action="store_true")
 parser.add_argument('--finetune_dec', action="store_true")
 parser.add_argument('--weighted_sample', action="store_true")
+parser.add_argument('--add_z2adapters', action="store_true")
 parser.add_argument('--learn_prior', action="store_true")
 parser.add_argument('--test_model', action="store_true")
 parser.add_argument('--do_sample', action="store_true", help="sample for reconstruction")
+
+cache_dir = '/home/tuhq/.cache/torch/transformers'
 
 def generate(args, model, save_dir, bsz, tokenizer, device, parallel=False, topk=100, top_p=0.95):
     endoftext = tokenizer.convert_tokens_to_ids(tokenizer.eos_token)
@@ -340,9 +341,6 @@ def val_step(args, model, val_loader, ada_config, tokenizer, device, save_folder
                     val_loss, val_ce_loss, val_reg_loss, val_mu, val_lv = compute_loss(device, model, val_x_ids,
                                                                                    val_input_ids, val_attention_mask,
                                                                                    loss_fn, 1.0, 0.0, args.reg_loss, weighted_sample=False, from_mean=True)
-                # else:
-                #     loss, ce_loss, kl_loss = compute_loss_ae(device, AdaVAE, x_mask, x_tokens, y_mask, y_tokens,
-                #                                              input_tokens, target_tokens, mask, loss_fn, 1.0)
             """
             calculate text perplexity
             """
@@ -528,8 +526,8 @@ def test(args):
         torch.cuda.set_device(args.gpu)
         print('Current single GPU: {}'.format(torch.cuda.current_device()))
     device = torch.device(args.gpu if gpu else "cpu")
-    tokenizer = GPT2Tokenizer.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
-    gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
+    tokenizer = GPT2Tokenizer.from_pretrained('gpt2', cache_dir=cache_dir)
+    gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2', cache_dir=cache_dir)
     tokenizer.pad_token = tokenizer.eos_token
     # randomness
     np.random.seed(args.seed)
@@ -558,7 +556,8 @@ def test(args):
                                attn_bn=25,
                                prefix_dropout=0.1,
                                tune_enc=args.finetune_enc,
-                               tune_dec=args.finetune_dec)
+                               tune_dec=args.finetune_dec,
+                               add_z2adapters=args.add_z2adapters)
     AdaVAE = AdaVAEModel(config, ada_config, add_input=args.add_input, add_attn=args.add_attn, add_softmax=args.add_softmax, add_mem=args.add_mem,
                    attn_proj_vary=args.attn_proj_vary, learn_prior=args.learn_prior, reg_loss=args.reg_loss)
     ## load pre-trained weights
@@ -600,21 +599,22 @@ def test(args):
                 GenerationDataset.from_file(f"../data/optimus_dataset/{args.dataset}/test.txt"),
                 batch_size=args.batch_size,
                 pin_memory=True,
-                drop_last=True,
-                shuffle=False,
+                drop_last=False,
+                shuffle=True,
                 num_workers=args.workers)
             val_loader = DataLoader(
                 GenerationDataset.from_file(f"../data/optimus_dataset/{args.dataset}/valid.txt"),
                 batch_size=args.batch_size,
                 pin_memory=True,
-                drop_last=True,
+                drop_last=False,
+                shuffle=True,
                 num_workers=args.workers)
 
             if args.test_model:
                 print("test set")
-                val_step(args, AdaVAE, test_loader, ada_config, tokenizer, device)
+                val_step(args, AdaVAE, test_loader, ada_config, tokenizer, device, save_folder)
                 print("valid set")
-                val_step(args, AdaVAE, val_loader, ada_config, tokenizer, device)
+                val_step(args, AdaVAE, val_loader, ada_config, tokenizer, device, save_folder)
 
             save_dir = os.path.join(save_folder, "test_texts")
             if mode != "overall":
@@ -682,8 +682,8 @@ def test_short(args):
         torch.cuda.set_device(args.gpu)
         print('Current single GPU: {}'.format(torch.cuda.current_device()))
     device = torch.device(args.gpu if gpu else "cpu")
-    tokenizer = GPT2Tokenizer.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
-    gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
+    tokenizer = GPT2Tokenizer.from_pretrained('gpt2', cache_dir=cache_dir)
+    gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2', cache_dir=cache_dir)
     tokenizer.pad_token = tokenizer.eos_token
     # randomness
     np.random.seed(args.seed)

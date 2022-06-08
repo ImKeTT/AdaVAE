@@ -114,6 +114,7 @@ parser.add_argument('--finetune_enc', action="store_true")
 parser.add_argument('--attn_proj_vary', action="store_true")
 parser.add_argument('--save_all', action="store_true", help="save full parameters of the model")
 
+cache_dir = '/home/tuhq/.cache/torch/transformers'
 
 def tokenize(input_example, tokenizer, device, max_length):
     x_tokenized = tokenizer(input_example['text_a'], padding=True, truncation=True,
@@ -214,9 +215,9 @@ def train(args):
             torch.cuda.manual_seed_all(seed_i)
 
         config = GPT2Config()
-        tokenizer = GPT2Tokenizer.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
+        tokenizer = GPT2Tokenizer.from_pretrained('gpt2', cache_dir=cache_dir)
         tokenizer.pad_token = tokenizer.eos_token
-        gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2', cache_dir='/home/tuhq/.cache/torch/transformers')
+        gpt2_model = GPT2LMHeadModel.from_pretrained('gpt2', cache_dir=cache_dir)
         ada_config = AdapterConfig(hidden_size=768,
                                    adapter_size=args.adapter_size,
                                    adapter_act='relu',
@@ -325,7 +326,7 @@ def train(args):
         if args.dataset == "yelp":
             prefix_data_path = "../data/yelp_polarity"
         else:
-            prefix_data_path = f"./glue_data/{args.dataset.upper()}"
+            prefix_data_path = f"../glue_data/{args.dataset.upper()}"
         train_loader = DataLoader(
             DictDataset(processor.get_train_examples(prefix_data_path, args.percentage_per_label, args.sample_per_label)),
             batch_size=args.batch_sizes[0],

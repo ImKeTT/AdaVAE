@@ -28,8 +28,7 @@ parser = argparse.ArgumentParser()
 # Default parameters are set based on single GPU training
 parser.add_argument("--seed", type=int, default=42)
 
-parser.add_argument('--model_type', type=str, default='cvae', choices=['cvae'])
-parser.add_argument('--dataset', type=str, default='yelp_polarity', choices=['yelp_polarity, imdb_polariry'],
+parser.add_argument('--dataset', type=str, default='yelp_polarity',
                     help="Dataset to use for training")
 
 ## mode options
@@ -723,9 +722,9 @@ def test_short(args):
     AdaVAE.eval()
     ## load ckpt
     prefix = "/data/tuhq/PTMs/bert_adapter/src/out"
-    # save_folder = os.path.join(prefix, "snli_data_iter15000_as128_scalar1.0_cycle-auto_prenc-start_wsTrue_lg-averaged_attn_add_attn_beta1.0_reg-kld_attn_mode-none_ffn_option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-768_optFalse_ftFalse_zrate-0.1_fb-1sd-42_3.25")
-    save_folder = os.path.join(prefix,
-                               "yelp_polarity_iter15000_as128_scalar1.0_cycle-auto_prenc-start_wsTrue_lg-averaged_attn_add_attn_beta1.0_reg-kld_attn_mode-none_ffn_option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-768_optFalse_ftFalse_zrate-0.1_fb-1sd-42_3.25")
+    save_folder = os.path.join(prefix,args.experiment)
+    # save_folder = os.path.join(prefix,
+    #                            "yelp_polarity_iter15000_as128_scalar1.0_cycle-auto_prenc-start_wsTrue_lg-averaged_attn_add_attn_beta1.0_reg-kld_attn_mode-none_ffn_option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-768_optFalse_ftFalse_zrate-0.1_fb-1sd-42_3.25")
     print('Loading model weights...')
     state = torch.load(os.path.join(save_folder, 'model_best_val.pt'))  # , map_location='cpu' model_latest.pt
     if 'module' in list(state.keys())[0]:  # model_path is data parallel model with attr 'module'

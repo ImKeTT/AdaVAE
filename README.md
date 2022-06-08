@@ -40,11 +40,8 @@ adavae
 | |____...
 |____README.md
 |____dialogue
-| |____eval_dialog_response.py
 | |____run_spacefusion_gen.py
-| |____eval_dialog_multi_response.py
-| |____preprocess_dailydialog.py
-| |____spacefusion.py
+| |____...
 |____data
 |____src
 | |____test.py
@@ -54,6 +51,7 @@ adavae
 | |____adaVAE.py
 | |____run_manipulation.sh
 | |____run_lm.sh
+| |____test.py
 | |____...
 ```
 
@@ -97,6 +95,10 @@ TBD.
 TBD. [Check `src/test.py` for more information]
 
 
+
+## Others
+
+Please email me or open an issue if you have any question.
 
 if you find our work useful, please cite the paper :>
 

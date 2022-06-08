@@ -13,7 +13,7 @@ sys.path.append('../')
 import numpy as np
 from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
-# from tensorboardX import SummaryWriter
+from tensorboardX import SummaryWriter
 from src.logger import Logger
 from src.data import ConditionalGenerationDataset
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Config, AdamW, get_linear_schedule_with_warmup
@@ -25,7 +25,6 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--lr', type=float, default=5e-5)
 parser.add_argument("--seed", type=int, default=42)
 
-# parser.add_argument('--data_type', type=str, default='t1', choices=['t' + str(i) for i in range(9)], help="t: type")
 parser.add_argument('--class_num', type=int, default=2)
 parser.add_argument('--batch_size', type=int, default=200)
 parser.add_argument('--max_length', type=int, default=30)
@@ -103,6 +102,8 @@ def train(args):
 
     save_folder = os.path.join(args.out_dir, "oracle_cls")
     os.makedirs(save_folder, exist_ok=True)
+    t_writer = SummaryWriter(os.path.join(save_folder, 'train'), flush_secs=5)
+    v_writer = SummaryWriter(os.path.join(save_folder, 'val'), flush_secs=5)
     logging_file = "oracle_cls.log"
     logging = Logger(os.path.join(args.out_dir, logging_file))
     # t_writer = SummaryWriter(os.path.join(save_folder, 'train'), flush_secs=5)
@@ -127,19 +128,22 @@ def train(args):
         ConditionalGenerationDataset.from_file(f"../data/{args.dataset}/train.txt"),
         batch_size=args.batch_size,
         pin_memory=True,
-        drop_last=True,
+        drop_last=False,
+        shuffle=True,
         num_workers=args.workers)
     test_loader = DataLoader(
         ConditionalGenerationDataset.from_file(f"../data/{args.dataset}/test.txt"),
         batch_size=args.batch_size,
         pin_memory=True,
-        drop_last=True,
+        drop_last=False,
+        shuffle=True,
         num_workers=args.workers)
     val_loader = DataLoader(
         ConditionalGenerationDataset.from_file(f"../data/{args.dataset}/valid.txt"),
         batch_size=args.batch_size,
         pin_memory=True,
-        drop_last=True,
+        drop_last=False,
+        shuffle=True,
         num_workers=args.workers)
     logging.info('Done.')
 
@@ -181,7 +185,6 @@ def train(args):
         logging.info('\n----------------------------------------------------------------------')
         logging.info("Training loop.       Batches: %d" % len(train_loader))
 
-        # train_iter = iter(train_loader); x_mask, x_tokens, y_mask, y_tokens, input_tokens, target_tokens, mask = next(train_iter)
         with tqdm(total=len(train_loader)) as pbar:
             for i, data_dict in enumerate(train_loader):
                 x_ids, input_ids, attention_mask = tokenize(data_dict['x'], tokenizer, device, args)
@@ -191,8 +194,8 @@ def train(args):
                 loss = model.step(optimizer, loss_cls)
                 acc_cls = acc_cls.mean()
 
-                # t_writer.add_scalar('loss', loss, num_iters)
-                # t_writer.add_scalar('acc', acc_cls, num_iters)
+                t_writer.add_scalar('loss', loss, num_iters)
+                t_writer.add_scalar('acc', acc_cls, num_iters)
 
                 end = num_iters >= args.iterations
 
@@ -220,8 +223,8 @@ def train(args):
             e += 1
             logging.info("Training loop. The ith epoch completed: %d" % e)
 
-    # save_orderdict = model.state_dict()
-    # torch.save(save_orderdict, os.path.join(save_folder, 'oracle_cls_latest.pt'))
+    save_orderdict = model.state_dict()
+    torch.save(save_orderdict, os.path.join(save_folder, 'oracle_cls_latest.pt'))
 
     logging.info("Test dataset")
     val_step(test_loader)

@@ -1,1 +1,12 @@
-python run_vae_ctrl_gen.py --batch-sizes 90 --max_length 32 --add_attn --do_train --adapter_size 128 --latent_size 32 --experiment yelp_polarity_iter6000_as128_scalar1.0_add_attn_beta1.0_reg-kld_attn_mode-none_ffn_option-parallel_ffn_enc_layer-8_dec_layer-12_zdim-32_zrate-10.0_sd-42_2.12
+GPU=0
+DATA=yelp_polarity
+LATENT_GEN=latent_attn
+EXPERIMENT= [the pretrained model folder using run_lm.sh in ../src folder]
+
+CUDA_VISIBLE_DEVICES=$GPU python run_vae_ctrl_gen.py \
+        --dataset $DATA \
+        --batch-sizes 90 --max_length 32 \
+        --add_attn --do_train \
+        --adapter_size 128 --latent_size 32 \
+        --latent_gen $LATENT_GEN \
+        --experiment $EXPERIMENT
